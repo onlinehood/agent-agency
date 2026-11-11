@@ -18,8 +18,8 @@ import { retentionPolicy } from "../ops/maintenance.js";
 import { revokeCredential } from "../security/revoke.js";
 import { WebAuth } from "../web/auth.js";
 import { BackSignal, CancelSignal, type Option, type Prompter } from "./prompt.js";
-import { ACCESSORIES, COLORS, SHAPES, MASCOT, avatar, defaultLook, describeLook, type Look, type Mood } from "./sprites.js";
-import { c, box, welcome, party, stepLine, resultLine, subLine, spinner as ttySpinner, truncate, termWidth, width, type Spinner, type Tone } from "./term.js";
+import { mascot } from "./sprites.js";
+import { c, box, welcome, stepLine, resultLine, subLine, spinner as ttySpinner, truncate, termWidth, width, type Spinner, type Tone } from "./term.js";
 
 /** Local subscription CLIs the setup can log in to (official subscription login only). */
 interface LoginSpec {
@@ -402,47 +402,6 @@ export class SetupCli {
       return { value: m, label: `${d.emoji} ${d.labelKo}`, hint: `${d.titles.user} · ${d.titles.moderator} · ${d.titles.member}` };
     });
   }
-  private showLook(look: Look, name: string) {
-    this.line();
-    for (const l of avatar(look, "happy")) this.line(`     ${l}`);
-    this.line(`     ${c.bold(name)} ${c.dim(`· ${describeLook(look)}`)}`);
-  }
-
-  /** Show the suggested look; keep it or customise shape, colour and accessory with live previews. */
-  private async pickLook(name: string, initial: Look): Promise<Look> {
-    this.showLook(initial, name);
-    const choice = await this.p.select({ message: `${name}의 모습`, options: [{ value: "keep", label: "이대로 좋아요" }, { value: "edit", label: "꾸미기", hint: "모양 · 색 · 소품" }] });
-    return choice === "keep" ? initial : this.customizeLook(name, initial);
-  }
-
-  private async customizeLook(name: string, start: Look): Promise<Look> {
-    let look = { ...start };
-    for (;;) {
-      const part = await this.p.select({
-        message: `${name} 꾸미기`,
-        options: [
-          { value: "shape", label: "모양", hint: SHAPES[look.shape].labelKo },
-          { value: "color", label: "색", hint: COLORS[look.color].labelKo },
-          { value: "accessory", label: "소품", hint: ACCESSORIES[look.accessory].labelKo },
-          { value: "done", label: "완료" },
-        ],
-      });
-      if (part === "done") return look;
-      if (part === "shape") look = { ...look, shape: await this.p.select({ message: "모양", options: (Object.keys(SHAPES) as Look["shape"][]).map((k) => ({ value: k, label: SHAPES[k].labelKo })), initial: look.shape }) };
-      if (part === "color") look = { ...look, color: await this.p.select({ message: "색", options: (Object.keys(COLORS) as Look["color"][]).map((k) => ({ value: k, label: COLORS[k].labelKo })), initial: look.color }) };
-      if (part === "accessory") look = { ...look, accessory: await this.p.select({ message: "소품", options: (Object.keys(ACCESSORIES) as Look["accessory"][]).map((k) => ({ value: k, label: ACCESSORIES[k].labelKo })), initial: look.accessory }) };
-      this.showLook(look, name);
-    }
-  }
-
-  private async showParty(user?: User | null, mood?: Mood) {
-    const members = await this.svc.party(user, { mood });
-    if (!members.length) return false;
-    this.line();
-    for (const l of party(members, termWidth() - 4)) this.line(`  ${l}`);
-    return true;
-  }
-
   private personaOptions(): Option<PersonaPreset>[] {
     return PERSONAS.map((p) => ({ value: p, label: PERSONA_LABELS[p] }));
   }
@@ -460,7 +419,7 @@ export class SetupCli {
     const profile = await this.ctx.repos.users.getProfile(user.id);
     const mode = await this.p.select({ message: "조직 세계관 (호칭과 말투)", options: this.modeOptions(), initial: profile.mode });
 
-    const agents: Array<{ name: string; preset: string; provider: Provider; adapterId: string; look: Look }> = [];
+    const agents: Array<{ name: string; preset: string; provider: Provider; adapterId: string }> = [];
     if (!(await this.ctx.repos.agents.listByOwner(user.id)).length) {
       const candidates = LOGINS.filter((l) => this.ctx.executors.get(l.id) && (this.ctx.executors.isUsable(l.id) || l.id === "claude-cli" || l.id === "codex-cli"));
       const picked = await this.p.multiselect<string>({
@@ -472,8 +431,7 @@ export class SetupCli {
         const l = LOGINS.find((x) => x.id === id)!;
         const name = await this.p.text({ message: `${l.name} 에이전트 이름`, initial: l.agentName, validate: (v) => (v ? null : "이름을 넣으세요") });
         const preset = await this.p.select({ message: `${name}의 성격`, options: this.personaOptions(), initial: (["careful", "bold", "friendly"] as PersonaPreset[])[i % 3] });
-        const look = await this.pickLook(name, defaultLook(l.id, i));
-        agents.push({ name, preset, provider: l.provider, adapterId: l.id, look });
+        agents.push({ name, preset, provider: l.provider, adapterId: l.id });
       }
     }
     await this.svc.saveDefaults({ priority: this.parsePriority(priority), autoFallback, mode, agents });
@@ -502,10 +460,8 @@ export class SetupCli {
     }
     await this.svc.finish();
     const r = await this.deps.control({ telegram: "restart", executors: true, github: true, greet: true });
-    if (!(await this.showParty(null, "happy"))) {
-      this.line();
-      for (const l of avatar(MASCOT, "happy")) this.line(`   ${l}`);
-    }
+    this.line();
+    for (const l of mascot()) this.line(`   ${l}`);
     this.line(
       box(
         [
@@ -619,7 +575,6 @@ export class SetupCli {
   async statusView(): Promise<void> {
     this.line(stepLine("현재 상태"));
     const user = await this.svc.primaryUser();
-    await this.showParty(user);
     if (user) {
       const profile = await this.ctx.repos.users.getProfile(user.id);
       const d = modeDef(profile.mode);
@@ -704,20 +659,15 @@ export class SetupCli {
       const name = await this.p.text({ message: "이름", validate: (v) => (v ? null : "필수") });
       const adapterId = await this.p.select({ message: "실행기", options: adapters.map((a) => ({ value: a.id, label: a.displayName, hint: this.ctx.executors.isUsable(a.id) ? "사용 가능" : "사용 불가" })) });
       const preset = await this.p.select({ message: "성격", options: this.personaOptions() });
-      const look = await this.pickLook(name, defaultLook(adapterId, agents.length));
-      const created = await this.svc.addAgent(user, { name, preset, provider: this.ctx.executors.get(adapterId)!.provider, adapterId });
-      await this.svc.setLook(created.id, look);
+      await this.svc.addAgent(user, { name, preset, provider: this.ctx.executors.get(adapterId)!.provider, adapterId });
       this.ok(`${name} 합류!`);
       return;
     }
     const agent = agents.find((a) => a.id === pick)!;
     const persona = await this.ctx.repos.personas.find(agent.personaId);
-    const look = await this.svc.lookOf(agent, agents.indexOf(agent));
-    this.showLook(look, agent.name);
     const field = await this.p.select({
       message: `${agent.name} — 무엇을 바꿀까요?`,
       options: [
-        { value: "look", label: "모습 꾸미기", hint: describeLook(look) },
         { value: "name", label: "이름", hint: agent.name },
         { value: "adapter", label: "실행기", hint: agent.adapterId },
         { value: "model", label: "모델", hint: agent.modelPolicy },
@@ -727,8 +677,7 @@ export class SetupCli {
         { value: "moderator", label: "진행자로 지정", hint: agent.id === profile.moderatorAgentId ? "지금 진행자" : "" },
       ],
     });
-    if (field === "look") await this.svc.setLook(agent.id, await this.customizeLook(agent.name, look));
-    else if (field === "name") await this.ctx.repos.agents.update(agent.id, { name: await this.p.text({ message: "이름", initial: agent.name, validate: (v) => (v ? null : "필수") }) });
+    if (field === "name") await this.ctx.repos.agents.update(agent.id, { name: await this.p.text({ message: "이름", initial: agent.name, validate: (v) => (v ? null : "필수") }) });
     else if (field === "adapter") {
       const id = await this.p.select({ message: "실행기", options: adapters.map((a) => ({ value: a.id, label: a.displayName, hint: this.ctx.executors.isUsable(a.id) ? "사용 가능" : "사용 불가" })), initial: agent.adapterId });
       await this.ctx.repos.agents.update(agent.id, { adapterId: id, provider: this.ctx.executors.get(id)!.provider, modelPolicy: "auto" });

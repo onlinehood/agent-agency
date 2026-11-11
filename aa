@@ -113,10 +113,11 @@ menu() {
   local where=$APP_DIR i
   [ "${#where}" -gt 40 ] && where="…${where: -39}"
   echo
-  # The team as dot-art characters (from the running app), or the knight when it is down.
-  if [ -n "${h:-}" ] && app -T -e COLUMNS="$(($(tui_cols) - 2))" app agent-agency art --party --one-row 2>/dev/null | sed 's/^/  /'; then :
-  else for ((i = 0; i < ${#TUI_ART_PLAIN[@]}; i++)); do printf '  %s\n' "$(tui_art "$i")"; done; fi
-  TUI_BOX_MIN=52 tui_box "${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}"
+  # Mascot on the left, name / state / location on the right.
+  local -a right=("" "${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}" "")
+  local -a lines=()
+  for ((i = 0; i < ${#TUI_ART_PLAIN[@]}; i++)); do lines+=(" $(tui_art "$i")   ${right[$i]:-}"); done
+  TUI_BOX_MIN=52 tui_box "${lines[@]}"
   while :; do
     echo
     TUI_DEFAULT=0 tui_select "무엇을 할까요?" \

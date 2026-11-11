@@ -8,7 +8,6 @@ import { GitHubAppTokenProvider } from "../github/appAuth.js";
 import { setExecutionPolicy } from "../core/execution/policy.js";
 import { isOrganizationMode, modeDef } from "../core/organization/modes.js";
 import { verifyExecutor } from "../executors/verify.js";
-import { MOOD_KO, defaultLook, isLook, type Look, type Mood } from "../cli/sprites.js";
 
 export const PERSONAS: PersonaPreset[] = ["careful", "bold", "friendly", "analytical", "mentor", "pragmatic"];
 export const PERSONA_LABELS: Record<PersonaPreset, string> = {
@@ -168,18 +167,14 @@ export class SetupService {
 
   /* ------------------------------------------------ defaults */
 
-  async saveDefaults(input: { priority: Priority; autoFallback: boolean; mode?: string; agents?: Array<{ name: string; preset: string; provider: Provider; adapterId: string; look?: Look }> }) {
+  async saveDefaults(input: { priority: Priority; autoFallback: boolean; mode?: string; agents?: Array<{ name: string; preset: string; provider: Provider; adapterId: string }> }) {
     const user = await this.primaryUser();
     if (!user) throw new Error("Telegram 관리자를 먼저 설정하세요.");
     await setExecutionPolicy(this.ctx.repos, "user", user.id, { priority: input.priority, autoFallback: input.autoFallback });
     if (input.mode && isOrganizationMode(input.mode)) await this.app.orchestrator.setMode(user, input.mode as never);
     if (!(await this.ctx.repos.agents.listByOwner(user.id)).length && input.agents?.length) {
       const created = [];
-      for (const a of input.agents) {
-        const agent = await this.addAgent(user, a);
-        if (a.look) await this.setLook(agent.id, a.look);
-        created.push(agent);
-      }
+      for (const a of input.agents) created.push(await this.addAgent(user, a));
       if (created[0]) await this.ctx.repos.users.updateProfile(user.id, { moderatorAgentId: created[0].id });
     }
     await this.setSys("setup.defaults_done", true);
@@ -188,49 +183,6 @@ export class SetupService {
   async addAgent(user: User, a: { name: string; preset: string; provider: Provider; adapterId: string }) {
     const persona = await this.ctx.repos.personas.create((PERSONAS.includes(a.preset as PersonaPreset) ? a.preset : "careful") as PersonaPreset);
     return this.ctx.repos.agents.create({ ownerId: user.id, name: a.name, provider: a.provider, adapterId: a.adapterId, modelPolicy: "auto", authMode: "official_subscription", personaId: persona.id, organizationRole: "auto", dialoguePolicy: "relationship_aware", memoryEnabled: true, relationshipHistory: true, enabled: true });
-  }
-
-  /* ------------------------------------------------ avatars (expression only) */
-
-  async lookOf(agent: { id: string; adapterId: string }, index = 0): Promise<Look> {
-    const v = await this.sys<Look>(`agent.look.${agent.id}`);
-    return isLook(v) ? v : defaultLook(agent.adapterId, index);
-  }
-
-  async setLook(agentId: string, look: Look) {
-    await this.setSys(`agent.look.${agentId}`, look);
-  }
-
-  /** What each agent is doing right now, from the task table (shown as the avatar's face). */
-  async moods(): Promise<Map<string, Mood>> {
-    const out = new Map<string, Mood>();
-    const rank: Record<Mood, number> = { worried: 4, waiting: 3, working: 2, happy: 1, idle: 0, sleepy: 0 };
-    const put = (id: string | null, m: Mood) => {
-      if (id && rank[m] > rank[out.get(id) ?? "idle"]) out.set(id, m);
-    };
-    for (const t of await this.ctx.repos.tasks.listByStates(["planning", "in_progress", "review", "awaiting_approval", "blocked"])) {
-      if (t.state === "blocked") put(t.assignedAgentId, "worried");
-      else if (t.state === "awaiting_approval") put(t.assignedAgentId, "waiting");
-      else if (t.state === "review") put(t.reviewerAgentId ?? t.assignedAgentId, "working");
-      else put(t.assignedAgentId, "working");
-    }
-    return out;
-  }
-
-  /** The user's agents as a team (moderator first) with their current mood. */
-  async party(user?: User | null, opts: { mood?: Mood } = {}): Promise<Array<{ look: Look; mood: Mood; name: string; note: string }>> {
-    const u = user ?? (await this.primaryUser());
-    if (!u) return [];
-    const profile = await this.ctx.repos.users.getProfile(u.id);
-    const agents = (await this.ctx.repos.agents.listByOwner(u.id)).filter((a) => a.enabled);
-    agents.sort((a, b) => Number(b.id === profile.moderatorAgentId) - Number(a.id === profile.moderatorAgentId));
-    const moods = opts.mood ? new Map<string, Mood>() : await this.moods();
-    const out = [];
-    for (const [i, a] of agents.entries()) {
-      const mood = opts.mood ?? moods.get(a.id) ?? "idle";
-      out.push({ look: await this.lookOf(a, i), mood, name: a.name, note: `${a.id === profile.moderatorAgentId ? "진행자 · " : ""}${MOOD_KO[mood]}` });
-    }
-    return out;
   }
 
   /* ------------------------------------------------ smoke + finish */

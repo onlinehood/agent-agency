@@ -2,7 +2,7 @@
  * Terminal rendering for the interactive setup/config CLI: colors, display width (Korean is
  * double-width), boxes, status lines, dot-art characters and a spinner. No dependencies.
  */
-import { avatar, MASCOT, type Look, type Mood } from "./sprites.js";
+import { mascot } from "./sprites.js";
 
 const useColor = () => !process.env.NO_COLOR && process.env.TERM !== "dumb";
 const sgr = (code: string) => (s: string) => (useColor() ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -84,8 +84,8 @@ export function box(lines: string[], opts: { title?: string; color?: (s: string)
 /* ------------------------------------------------ dot art */
 
 /** Welcome banner: the mascot on the left, title and hints on the right, in an orange box. */
-export function welcome(version: string, subtitle: string, hints: string[], look: Look = MASCOT): string {
-  const art = avatar(look, "happy");
+export function welcome(version: string, subtitle: string, hints: string[]): string {
+  const art = mascot();
   const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), "", subtitle];
   const top = Math.max(0, Math.floor((art.length - right.length) / 2));
   const artW = Math.max(...art.map((l) => width(l)));
@@ -93,46 +93,6 @@ export function welcome(version: string, subtitle: string, hints: string[], look
   for (let i = 0; i < art.length; i++) lines.push(` ${pad(art[i]!, artW)}   ${right[i - top] ?? ""}`);
   lines.push("", ...hints.map((h) => ` ${c.dim(h)}`));
   return box(lines, { width: Math.min(termWidth() - 4, 72) });
-}
-
-export interface PartyMember {
-  look: Look;
-  mood?: Mood;
-  name: string;
-  note?: string;
-}
-
-/** Characters side by side (bottom-aligned) with names under them; wraps to the terminal width. */
-export function party(members: PartyMember[], maxWidth = termWidth(), opts: { oneRow?: boolean } = {}): string[] {
-  const cells = members.map((m) => {
-    const art = avatar(m.look, m.mood ?? "idle");
-    const w = Math.max(...art.map((l) => width(l)), width(m.name) + 2, width(m.note ?? ""));
-    return { art, w, m };
-  });
-  const out: string[] = [];
-  let row: typeof cells = [];
-  const flush = () => {
-    if (!row.length) return;
-    const h = Math.max(...row.map((x) => x.art.length));
-    for (let i = 0; i < h; i++) out.push(row.map((x) => pad(x.art[i - (h - x.art.length)] ?? "", x.w)).join("  "));
-    const center = (s: string, w: number) => pad(" ".repeat(Math.max(0, Math.floor((w - width(s)) / 2))) + s, w);
-    out.push(row.map((x) => center(c.bold(x.m.name), x.w)).join("  "));
-    if (row.some((x) => x.m.note)) out.push(row.map((x) => center(c.dim(x.m.note ?? ""), x.w)).join("  "));
-    out.push("");
-    row = [];
-  };
-  let used = 0;
-  for (const cell of cells) {
-    if (row.length && used + 2 + cell.w > maxWidth) {
-      if (opts.oneRow) break;
-      flush();
-      used = 0;
-    }
-    used += (row.length ? 2 : 0) + cell.w;
-    row.push(cell);
-  }
-  flush();
-  return out;
 }
 
 /* ------------------------------------------------ status lines */

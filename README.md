@@ -39,10 +39,6 @@ curl -fsSL https://raw.githubusercontent.com/onlinehood/agent-agency/main/instal
 4. 실행 우선순위, 조직 세계관, 초기 에이전트를 정합니다.
 5. 전체 진단과 엔드투엔드 스모크 테스트를 마치면 Telegram 운영이 시작됩니다.
 
-에이전트마다 작은 캐릭터가 생깁니다. 모양·색·소품으로 꾸미고, 표정이 지금 하는 일(쉬는 중·일하는 중·승인 기다림·막힘)을 보여 줍니다. 보이는 모습만 바뀌고 역할·권한은 그대로입니다.
-
-<img src="docs/images/characters.png" alt="에이전트 캐릭터" width="720">
-
 운영 중에는 `aa` 한 단어로 관리 메뉴(설정 바꾸기, 상태, 로그, 진단, 백업, 업데이트, 재시작)를 엽니다. 설정은 `aa config` 하나로 모든 설정(Telegram, AI 구독, GitHub, 실행 정책, 세계관, 에이전트, 기능 플래그, 유료 API, 백업, 인증정보 차단)을 메뉴에서 고칩니다. 웹 대시보드는 선택 사항입니다(`aa web`).
 
 공개 도메인 없이 Telegram Long Polling으로 동작합니다.
