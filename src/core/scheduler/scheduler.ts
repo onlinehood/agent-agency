@@ -22,6 +22,9 @@ export interface SchedulerOptions {
   resourceProbe?: () => ResourceSnapshot;
 }
 
+/** A resource alert repeats at most this often while work keeps waiting. */
+export const RESOURCE_ALERT_EVERY_MS = 6 * 3600_000;
+
 export class Scheduler implements TaskScheduler {
   readonly workerId = newId("wrk");
   private timer: NodeJS.Timeout | null = null;
@@ -30,7 +33,9 @@ export class Scheduler implements TaskScheduler {
   private runningTasks = new Map<string, string | null>();
   private maintenance = false;
   private lastDecision: ResourceDecision | null = null;
-  private alerted = false;
+  private lastSnapshot: ResourceSnapshot | null = null;
+  /** Last time a "resources too low" alert went out (at most one per RESOURCE_ALERT_EVERY_MS). */
+  private lastResourceAlert = 0;
   private ticking = false;
 
   constructor(
@@ -76,6 +81,7 @@ export class Scheduler implements TaskScheduler {
 
   resources(): ResourceDecision {
     const snap = (this.opts.resourceProbe ?? (() => snapshot(this.ctx.config.dataDir)))();
+    this.lastSnapshot = snap;
     return decide(snap, this.opts.maxConcurrentProjects ?? this.ctx.config.AA_MAX_CONCURRENT_PROJECTS);
   }
 
@@ -173,11 +179,18 @@ export class Scheduler implements TaskScheduler {
       const d = this.resources();
       this.lastDecision = d;
       if (!d.acceptNewWork) {
-        if (!this.alerted) this.ctx.events.emit("alert", { level: "warn", message: `서버 자원 부족으로 신규 작업을 연기합니다: ${d.reasons.join(", ")}` });
-        this.alerted = true;
+        // Tell the user only when something is actually waiting, and not more than every few
+        // hours: memory hovering around the threshold must not turn into a stream of messages.
+        if (Date.now() - this.lastResourceAlert > RESOURCE_ALERT_EVERY_MS && (await this.ctx.repos.jobs.countReady(["task.run", "project.baseline"])) > 0) {
+          this.lastResourceAlert = Date.now();
+          const small = (this.lastSnapshot?.totalMemBytes ?? Infinity) < 3.5 * 1024 ** 3;
+          this.ctx.events.emit("alert", {
+            level: "warn",
+            message: `서버 자원이 부족해 대기 중인 작업을 잠시 미룹니다: ${d.blocking.join(", ")}. 여유가 생기면 자동으로 이어서 진행합니다.${small ? " 이 서버는 RAM이 작아요(권장 4GB 이상). 스왑을 추가하거나 더 큰 서버로 옮기는 것을 권장합니다 — 설치 가이드의 문제 해결을 보세요." : ""}`,
+          });
+        }
         return 0;
       }
-      this.alerted = false;
       let started = 0;
       while (this.runningProjects.size < d.allowedConcurrency) {
         const [job] = await this.ctx.repos.jobs.claim(this.workerId, 1, ["task.run", "project.baseline"]);

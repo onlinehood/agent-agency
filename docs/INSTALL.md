@@ -179,6 +179,22 @@ Claude Code처럼 한 단계씩 진행됩니다. 질문에는 ↑↓(또는 숫�
 
 OCI Always Free(ARM), AWS, Azure, GCP, 일반 VPS 모두 됩니다. 특정 클라우드 기능은 쓰지 않습니다.
 
+> **RAM 1GB 서버(예: OCI Always Free의 AMD 인스턴스)는 권장하지 않습니다.** PostgreSQL, 앱, AI CLI가 함께 돌기에는 빠듯해서 작업이 자주 미뤄집니다. OCI라면 같은 무료 등급의 **Ampere A1(ARM, 최대 4 OCPU · 24GB)** 인스턴스를 쓰세요. 꼭 작은 서버를 써야 한다면 아래 "작은 서버에 스왑 추가"를 하세요.
+
+### 1.1.1 작은 서버에 스왑 추가 (RAM 4GB 미만일 때)
+
+디스크 일부를 메모리처럼 쓰게 해 메모리 부족을 덜어 줍니다. 느려지지만 작업이 멈추지는 않습니다. 아래는 4GB 스왑을 만들고 재부팅 후에도 유지하는 명령입니다.
+
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
+```bash
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+`free -h`의 Swap 줄에 4.0Gi가 보이면 됩니다. AgentAgency는 남은 스왑의 절반을 사용 가능한 메모리로 계산합니다.
+
 ### 1.2 Docker 설치
 
 서버에 SSH로 접속해 실행합니다.
@@ -650,6 +666,7 @@ docker compose exec app node dist/cli.js doctor
 
 | 증상 | 원인과 해결 |
 |---|---|
+| Telegram에 "서버 자원이 부족해 대기 중인 작업을 잠시 미룹니다" | 사용 가능한 메모리(또는 디스크)가 부족해 작업을 미루는 중입니다. 여유가 생기면 자동으로 이어서 하고, 알림은 6시간에 한 번만 옵니다. RAM이 4GB보다 작다면 [스왑을 추가](#111-작은-서버에-스왑-추가-ram-4gb-미만일-때)하거나 더 큰 서버로 옮기세요. `aa doctor`의 "서버 자원" 줄에서 현재 값을 볼 수 있습니다. |
 | `app`이 계속 재시작하고 로그에 `password authentication failed` | 첫 실행 뒤 `.env`의 `POSTGRES_PASSWORD`를 바꿨습니다. 원래 값으로 되돌리세요. 아직 데이터가 없다면 `docker compose down -v`로 볼륨까지 지우고 다시 시작할 수 있습니다(**모든 데이터 삭제**). |
 | `docker compose up`이 `set POSTGRES_PASSWORD in .env` 오류로 멈춤 | `.env`가 없거나 비밀번호가 비어 있습니다. 2.4를 다시 확인하세요. |
 | `대화형 터미널이 필요합니다` | 설정은 키보드로 조작하는 화면이라 SSH 터미널에서 직접 `aa setup` 을 실행해야 합니다(스크립트나 파이프로는 안 됩니다). |
