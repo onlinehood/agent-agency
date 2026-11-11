@@ -287,7 +287,10 @@ export class Orchestrator {
   private async recentDialogue(user: User, project: Project | null): Promise<string> {
     const since = new Date(Date.now() - 30 * 60_000);
     const mine = (await this.ctx.repos.requests.listRecent(user.id, project?.id ?? null, since, 6)).map((r) => ({ at: r.createdAt, line: `사용자: ${r.rawText}` }));
-    const said = (await this.ctx.repos.conversations.listRecentIn(project?.id ?? null, since, 8)).filter((m) => !/^(progress|alert)/.test(m.kind)).map((m) => ({ at: m.createdAt, line: m.renderedText.replace(/\s+/g, " ").slice(0, 600) }));
+    // The newest reply is kept (almost) whole: a short answer such as "B안으로" or "2번" refers to
+    // options that are usually at the end of a long message.
+    const recent = (await this.ctx.repos.conversations.listRecentIn(project?.id ?? null, since, 8)).filter((m) => !/^(progress|alert)/.test(m.kind));
+    const said = recent.map((m, i) => ({ at: m.createdAt, line: m.renderedText.replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim().slice(0, i === recent.length - 1 ? 4000 : 800) }));
     return [...mine, ...said]
       .sort((a, b) => a.at.localeCompare(b.at))
       .map((x) => `- ${x.line}`)
@@ -315,6 +318,7 @@ export class Orchestrator {
       '- "task": 지금 무언가를 만들거나 고치거나 조사하라는 지시. 직전에 AI가 제안한 내용에 "알아서 해", "그렇게 해줘", "좋아 진행해"라고 답한 경우도 포함 → task에 실행할 작업을 구체적으로 정리(직전 대화에서 정해진 내용 포함), title에 짧은 제목, project에 대상 프로젝트 이름(맥락의 프로젝트 중), reply에 한 줄 확인.',
       '- "idea": 지금 하라는 게 아니라 나중에 고려할 아이디어 → reply에 짧은 확인.',
       '- "new_project": 새 프로젝트를 만들자는 요청.',
+      '"B안으로", "2번", "그걸로", "좋아"처럼 짧은 답은 직전 대화에서 AI가 내놓은 선택지나 제안에 대한 답입니다. 직전 대화에서 그 선택지를 찾아 그대로 이어가세요. 고른 안이 만들거나 고치는 일이면 "task"로 정하고, task에 고른 안의 내용을 빠짐없이 적으세요.',
       '애매하면 "answer"로 정하고 무엇을 원하는지 짧게 되물으세요. 작업을 직접 실행하지는 마세요.',
       '형식: {"intent": "answer|task|idea|new_project", "reply": "...", "task": "...", "title": "...", "project": "..."}',
       `\n${context}`,

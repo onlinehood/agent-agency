@@ -115,6 +115,27 @@ describe("orchestrator", () => {
     void user;
   });
 
+  it("a short choice like \"B안으로\" is read against the options at the end of the last long reply", async () => {
+    const intro = "계산기를 어떻게 만들지 정리했습니다. ".repeat(40); // pushes the options far past the old 600-char cut
+    app = await makeTestApp({
+      claude: (req) =>
+        req.prompt.includes("사용자 메시지: 어떻게 만들까?")
+          ? JSON.stringify({ intent: "answer", reply: `${intro}\nA안: 터미널 계산기\nB안: 브라우저 웹 계산기 (HTML/CSS/JS 한 파일)\n어느 쪽으로 할까요?` })
+          : req.prompt.includes("사용자 메시지: B안으로")
+            ? JSON.stringify({ intent: "task", task: "브라우저 웹 계산기를 HTML/CSS/JS 한 파일로 만든다", title: "웹 계산기", project: "simple-calc", reply: "B안으로 진행할게요." })
+            : "{}",
+      codex: () => "{}",
+    });
+    const { user } = await seedUserAndAgents(app);
+    const p = await app.ctx.repos.projects.create({ ownerId: user.id, name: "simple-calc", slug: "simple-calc", description: "계산기", stack: [], status: "active", repoMode: "new", workType: "coding" });
+    await app.orchestrator.handleMessage(msg("어떻게 만들까?"));
+    await app.orchestrator.handleMessage(msg("B안으로"));
+    const prompt = app.claude.calls.find((r) => r.prompt.includes("사용자 메시지: B안으로"))!.prompt;
+    expect(prompt).toContain("B안: 브라우저 웹 계산기 (HTML/CSS/JS 한 파일)");
+    expect(prompt).toContain("짧은 답은 직전 대화에서 AI가 내놓은 선택지");
+    expect((await app.ctx.repos.tasks.listByProject(p.id)).map((t) => t.title)).toEqual(["웹 계산기"]);
+  });
+
   it("a build request in the lounge becomes a task even when the AI tries to do it and reports missing write tools", async () => {
     app = await makeTestApp({
       claude: (req) => (req.prompt.includes("사용자 메시지:") ? "Write/Edit와 Bash 도구 권한이 없어 진행하지 못했습니다. 권한을 열고 다시 지시해 주세요." : "{}"),
