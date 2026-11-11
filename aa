@@ -26,7 +26,7 @@ AgentAgency — aa 만 입력하면 메뉴가 열립니다.
   aa status            상태
   aa logs              로그 (Ctrl+C로 나가기)
   aa doctor            전체 연결 진단
-  aa login claude      Claude 구독 로그인 (codex, gemini)
+  aa login claude      Claude 구독 로그인 (codex, gemini, cursor)
   aa verify <실행기>    실행기 검증 (claude-cli, codex-cli, gemini-cli ...)
   aa backup            지금 백업 (복원 검증 포함)
   aa key               마스터 키 꺼내기 (안전한 곳에 보관 후 삭제)
@@ -89,7 +89,7 @@ cmd_cursor() {
   tui_run "이미지 다시 빌드" compose build app || tui_die "빌드 실패"
   tui_run "재시작" compose up -d || tui_die "시작 실패"
   tui_run "준비 기다리는 중" wait_healthy || tui_die "앱이 준비되지 않았어요 — aa logs"
-  tui_note "이제 aa config → AI 구독 에서 Cursor를 골라 로그인하세요."
+  tui_note "이제 aa login cursor 로 로그인하고 aa verify cursor-cli 로 확인하세요 (aa config → AI 구독 에서도 됩니다)."
 }
 
 cmd_web() {
@@ -161,7 +161,8 @@ case "${1:-}" in
       claude) app -it app claude auth login --claudeai ;;
       codex) app -it app codex login --device-auth ;;
       gemini) app -it app agent-agency gemini-login ;;
-      *) echo "사용법: aa login claude|codex|gemini" >&2; exit 2 ;;
+      cursor) app -it -e NO_OPEN_BROWSER=1 app cursor-agent login || tui_note "Cursor가 없으면 먼저 aa cursor 로 설치하세요." ;;
+      *) echo "사용법: aa login claude|codex|gemini|cursor" >&2; exit 2 ;;
     esac
     tui_note "로그인했으면 aa verify ${2}-cli 로 검증하세요 (aa config → AI 구독 에서도 됩니다)."
     ;;

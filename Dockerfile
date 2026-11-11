@@ -30,10 +30,10 @@ COPY --from=build --chown=agent:agent /app/dist ./dist
 COPY --chown=agent:agent package.json ./
 # `agent-agency setup` / `agent-agency config` inside the container (./aa wraps these).
 RUN chmod +x /app/dist/cli.js && ln -sf /app/dist/cli.js /usr/local/bin/agent-agency
-RUN mkdir -p /data /home/agent/.claude /home/agent/.codex /home/agent/.gemini /home/agent/.cursor /home/agent/.local/bin && chown -R 1000:1000 /data /home/agent
+RUN mkdir -p /data /home/agent/.claude /home/agent/.codex /home/agent/.gemini /home/agent/.cursor /home/agent/.config/cursor /home/agent/.local/bin && chown -R 1000:1000 /data /home/agent
 USER 1000:1000
 # The node base image already has uid 1000 ("node", home /home/node). Pin HOME explicitly so CLI
-# logins (~/.claude, ~/.codex, ~/.gemini, ~/.cursor) land in the mounted volumes and survive rebuilds.
+# logins (~/.claude, ~/.codex, ~/.gemini, ~/.cursor, ~/.config/cursor) land in the mounted volumes and survive rebuilds.
 ENV HOME=/home/agent
 RUN if [ "$INSTALL_CURSOR_CLI" = "true" ]; then curl -fsS https://cursor.com/install | bash; fi
 ENV PATH="/home/agent/.local/bin:${PATH}"

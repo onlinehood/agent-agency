@@ -65,6 +65,8 @@ services:
       - codex-auth:/home/agent/.codex
       - gemini-auth:/home/agent/.gemini
       - cursor-auth:/home/agent/.cursor
+      # Cursor keeps its login in ~/.config/cursor/auth.json on Linux.
+      - cursor-config:/home/agent/.config/cursor
     deploy:
       resources:
         limits:
@@ -78,3 +80,4 @@ volumes:
   codex-auth:
   gemini-auth:
   cursor-auth:
+  cursor-config:
