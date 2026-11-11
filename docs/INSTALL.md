@@ -183,17 +183,25 @@ OCI Always Free(ARM), AWS, Azure, GCP, 일반 VPS 모두 됩니다. 특정 클�
 
 ### 1.1.1 작은 서버에 스왑 추가 (RAM 4GB 미만일 때)
 
-디스크 일부를 메모리처럼 쓰게 해 메모리 부족을 덜어 줍니다. 느려지지만 작업이 멈추지는 않습니다. 아래는 4GB 스왑을 만들고 재부팅 후에도 유지하는 명령입니다.
+디스크 일부를 메모리처럼 쓰게 해 메모리 부족을 덜어 줍니다. 느려지지만 작업이 멈추지는 않습니다. 먼저 이미 있는 스왑을 확인합니다. Ubuntu 클라우드 이미지에는 `/swapfile`이 처음부터 켜져 있는 경우가 많습니다.
 
 ```bash
-sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+swapon --show
+```
+
+기존 스왑은 그대로 두고, 모자란 만큼 새 파일(`/swapfile2`)을 하나 더 만들어 붙입니다. 아래는 2GB를 더해 재부팅 후에도 유지하는 명령입니다. 기존 스왑이 없다면 `2G` 대신 `4G`로 만드세요.
+
+```bash
+sudo fallocate -l 2G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2
 ```
 
 ```bash
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+grep -q '^/swapfile2 ' /etc/fstab || echo '/swapfile2 none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-`free -h`의 Swap 줄에 4.0Gi가 보이면 됩니다. AgentAgency는 남은 스왑의 절반을 사용 가능한 메모리로 계산합니다.
+`free -h`의 Swap 줄이 4.0Gi 정도면 됩니다.
+
+> 작은 서버에서 기존 스왑을 `swapoff`로 끄고 크기를 바꾸지 마세요. 스왑에 있던 내용을 전부 RAM으로 되돌려야 해서, RAM이 1GB면 몇십 분씩 멈춘 것처럼 보이거나 실패합니다. 이미 실행해서 멈췄다면 Ctrl+C로 취소하세요. 기존 스왑은 그대로 켜져 있습니다. Ctrl+C도 듣지 않으면 클라우드 콘솔에서 인스턴스를 재부팅하세요. AgentAgency는 남은 스왑의 절반을 사용 가능한 메모리로 계산합니다.
 
 ### 1.2 Docker 설치
 

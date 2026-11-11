@@ -1,9 +1,9 @@
 import type { Agent, RequestClassification } from "../types.js";
 
 /**
- * Rule-based request understanding (PRD §5-1). Clear instructions become tasks, loose ideas go
- * to the candidate list, questions are answered, and only important ambiguity triggers a question.
- * An LLM moderator may refine this, but the rule layer is always available and deterministic.
+ * Rule-based request understanding (PRD §5-1). Clear commands are routed from here directly;
+ * conversational or ambiguous messages are re-read by an AI with the recent conversation
+ * (Orchestrator.understand), and this rule result is the fallback when no AI can decide.
  */
 export interface Classified {
   classification: RequestClassification;

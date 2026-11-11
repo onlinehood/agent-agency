@@ -181,6 +181,7 @@ export async function createApp(config: Config, o: AppOverrides = {}): Promise<A
       if (opts.scheduler !== false) {
         await scheduler.recover();
         await orchestrator.resumeMaintenanceOnStart();
+        await orchestrator.resumeActivationsOnStart();
         scheduler.start();
       }
       if (opts.maintenance !== false) stopMaintenance = startMaintenance(ctx, { everyMinute: [() => orchestrator.remindApprovals()] });
