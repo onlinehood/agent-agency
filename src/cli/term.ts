@@ -70,12 +70,65 @@ export function truncate(s: string, w: number): string {
 }
 
 // COLUMNS covers `docker compose exec -T` (no TTY inside the container, so no width of its own).
-export const termWidth = () => Math.max(40, Math.min(process.stdout.columns || Number(process.env.COLUMNS) || 80, 100));
+// `docker compose exec` can report 80 columns before the real size arrives, so the host's width
+// (COLUMNS, passed by ./aa) wins when it is smaller. Phones are often only 40–50 columns wide.
+export function columnsOf(stream: { columns?: number } = process.stdout): number {
+  const known = [stream.columns, Number(process.env.COLUMNS)].filter((n): n is number => typeof n === "number" && n > 0);
+  return known.length ? Math.min(...known) : 80;
+}
+export const termWidth = () => Math.max(30, Math.min(columnsOf(), 100));
+
+/** Word-wrap one (possibly coloured) line to a display width; colours carry over to the next line. */
+export function wrapLine(s: string, max: number): string[] {
+  if (max < 4 || width(s) <= max) return [s];
+  const out: string[] = [];
+  let line = "";
+  let lineW = 0;
+  let sgr = ""; // colour active at the current point
+  let lastSpace = -1; // index in `line` just after the last space
+  const flush = (cut: number) => {
+    const head = line.slice(0, cut).replace(/ +$/, "");
+    const rest = line.slice(cut).replace(/^ +/, "");
+    out.push(`${head}${sgr ? "\x1b[0m" : ""}`);
+    line = `${sgr}${rest}`;
+    lineW = width(line);
+    lastSpace = -1;
+  };
+  for (let i = 0; i < s.length; ) {
+    // eslint-disable-next-line no-control-regex
+    const m = /^\x1b\[[0-9;?]*[A-Za-z]/.exec(s.slice(i));
+    if (m) {
+      line += m[0];
+      // eslint-disable-next-line no-control-regex
+      sgr = /^\x1b\[0?m$/.test(m[0]) ? "" : sgr + m[0];
+      i += m[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(s.codePointAt(i)!);
+    i += ch.length;
+    const w = width(ch);
+    if (lineW + w > max) {
+      if (ch === " ") {
+        flush(line.length);
+        continue;
+      }
+      flush(lastSpace > 0 ? lastSpace : line.length);
+    }
+    line += ch;
+    lineW += w;
+    if (ch === " ") lastSpace = line.length;
+  }
+  if (width(line)) out.push(line);
+  return out;
+}
 
 /** Rounded box, Claude Code style. `title` sits in the top border. */
-export function box(lines: string[], opts: { title?: string; color?: (s: string) => string; width?: number } = {}): string {
+export function box(input: string[], opts: { title?: string; color?: (s: string) => string; width?: number } = {}): string {
   const color = opts.color ?? c.accent;
-  const inner = Math.max(opts.width ?? 0, ...lines.map((l) => width(l)), opts.title ? width(opts.title) + 4 : 0) + 2;
+  // Never wider than the screen (2 columns spare so the terminal does not auto-wrap the border).
+  const maxText = Math.max(10, termWidth() - 6);
+  const lines = input.flatMap((l) => wrapLine(l, maxText));
+  const inner = Math.min(maxText, Math.max(opts.width ?? 0, ...lines.map((l) => width(l)), opts.title ? width(opts.title) + 4 : 0)) + 2;
   const top = opts.title ? `╭─── ${opts.title} ${"─".repeat(Math.max(0, inner - width(opts.title) - 5))}╮` : `╭${"─".repeat(inner)}╮`;
   const body = lines.map((l) => `${color("│")} ${pad(l, inner - 2)} ${color("│")}`);
   return [color(top), ...body, color(`╰${"─".repeat(inner)}╯`)].join("\n");
@@ -86,15 +139,28 @@ export function box(lines: string[], opts: { title?: string; color?: (s: string)
 /** Welcome banner: the mascot on the left, title and hints on the right, in an orange box. */
 export function welcome(version: string, subtitle: string, hints: string[]): string {
   const art = mascot();
-  const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), subtitle];
+  const text = Math.min(termWidth() - 6, 72); // text width inside the box
+  const artW = Math.max(...art.map((l) => width(l)));
+  // The right column wraps within its own width so wrapped words stay aligned beside the mascot.
+  const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), subtitle].flatMap((l) => wrapLine(l, text - artW - 4));
   const rows = Math.max(art.length, right.length);
   const artTop = Math.floor((rows - art.length) / 2);
   const textTop = Math.floor((rows - right.length) / 2);
-  const artW = Math.max(...art.map((l) => width(l)));
   const lines: string[] = [""];
   for (let i = 0; i < rows; i++) lines.push(` ${pad(art[i - artTop] ?? "", artW)}   ${right[i - textTop] ?? ""}`);
-  lines.push("", ...hints.map((h) => ` ${c.dim(h)}`));
-  return box(lines, { width: Math.min(termWidth() - 4, 72) });
+  lines.push("", ...hints.flatMap((h) => packParts(h.split(" · "), text - 1).map((l) => ` ${c.dim(l)}`)));
+  return box(lines, { width: text });
+}
+
+/** Join "a · b · c" parts into as few lines as fit, breaking only between parts. */
+export function packParts(parts: string[], max: number): string[] {
+  const out: string[] = [];
+  for (const p of parts) {
+    const last = out[out.length - 1];
+    if (last !== undefined && width(`${last} · ${p}`) <= max) out[out.length - 1] = `${last} · ${p}`;
+    else out.push(p);
+  }
+  return out;
 }
 
 /* ------------------------------------------------ status lines */
@@ -128,7 +194,7 @@ export function spinner(label: string, stream: NodeJS.WriteStream = process.stdo
     const secs = Math.floor((Date.now() - started) / 1000);
     // The line must never wrap: "\r" only returns to the start of the last wrapped row, so a
     // wrapped spinner leaves a copy of itself on every frame (narrow phone terminals).
-    const max = Math.max(10, (stream.columns || 80) - 1);
+    const max = Math.max(10, columnsOf(stream) - 1);
     let head = `${FRAMES[i++ % FRAMES.length]!} ${label}…`;
     let tail = ` (${secs}s · Ctrl+C 중단)`;
     if (width(head + tail) > max) tail = ` ${secs}s`;

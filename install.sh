@@ -30,13 +30,16 @@ tui_cols() { local c; c=$(tput cols 2>/dev/null || echo 80); [ "$c" -gt 100 ] &&
 
 # Rounded box. TUI_BOX_MIN sets a minimum inner width.
 tui_box() {
-  local inner=${TUI_BOX_MIN:-0} l w
+  local inner=${TUI_BOX_MIN:-0} l w pad max
+  max=$(($(tui_cols) - 6)) # never wider than the screen (phones are ~40-50 columns)
+  [ "$inner" -gt "$max" ] && inner=$max
   for l in "$@"; do w=$(tui_w "$l"); [ "$w" -gt "$inner" ] && inner=$w; done
+  [ "$inner" -gt "$max" ] && inner=$max
   inner=$((inner + 2))
   printf '%s╭%s╮%s\n' "$C_ACC" "$(tui_rep ─ "$inner")" "$C_0"
   for l in "$@"; do
-    w=$(tui_w "$l")
-    printf '%s│%s %s%*s %s│%s\n' "$C_ACC" "$C_0" "$l" $((inner - 2 - w)) "" "$C_ACC" "$C_0"
+    w=$(tui_w "$l"); pad=$((inner - 2 - w)); [ "$pad" -lt 0 ] && pad=0
+    printf '%s│%s %s%*s %s│%s\n' "$C_ACC" "$C_0" "$l" "$pad" "" "$C_ACC" "$C_0"
   done
   printf '%s╰%s╯%s\n' "$C_ACC" "$(tui_rep ─ "$inner")" "$C_0"
 }
@@ -69,7 +72,8 @@ tui_welcome() {
     if [ "$j" -ge 0 ] && [ "$j" -lt "${#right[@]}" ]; then r=${right[$j]}; fi
     lines+=(" $(tui_art "$i")   $r")
   done
-  lines+=("" " ${C_DIM}↑↓ 이동 · Enter 선택 · Esc 뒤로 · Ctrl+C 종료${C_0}")
+  if [ "$(tui_cols)" -ge 60 ]; then lines+=("" " ${C_DIM}↑↓ 이동 · Enter 선택 · Esc 뒤로 · Ctrl+C 종료${C_0}")
+  else lines+=("" " ${C_DIM}↑↓ 이동 · Enter 선택${C_0}" " ${C_DIM}Esc 뒤로 · Ctrl+C 종료${C_0}"); fi
   TUI_BOX_MIN=68 tui_box "${lines[@]}"
 }
 
@@ -86,7 +90,8 @@ tui_die() { tui_fail "$*"; exit 1; }
 tui_select() {
   local q=$1; shift
   local -a opts=("$@")
-  local n=${#opts[@]} i=${TUI_DEFAULT:-0} j key rest label hint drawn=0
+  local n=${#opts[@]} i=${TUI_DEFAULT:-0} j key rest label hint drawn=0 cols
+  cols=$(tui_cols)
   if [ "$TUI_INTERACTIVE" != 1 ]; then TUI_REPLY=$i; printf '%s✔%s %s %s›%s %s\n' "$C_ACC" "$C_0" "$q" "$C_DIM" "$C_0" "${opts[$i]%%|*}"; return 0; fi
   printf '\e[?25l'
   while :; do
@@ -95,6 +100,8 @@ tui_select() {
     for ((j = 0; j < n; j++)); do
       label=${opts[$j]%%|*}; hint=""
       [ "$label" != "${opts[$j]}" ] && hint="  ${C_DIM}· ${opts[$j]#*|}${C_0}"
+      # A wrapped option line would break the redraw: drop the hint when it does not fit.
+      [ -n "$hint" ] && [ $(($(tui_w "    $((j + 1)). $label$hint") + 1)) -gt "$cols" ] && hint=""
       if [ "$j" = "$i" ]; then printf '  %s❯ %d. %s%s%s\n' "$C_ACC" $((j + 1)) "$label" "$C_0" "$hint"
       else printf '    %d. %s%s\n' $((j + 1)) "$label" "$hint"; fi
     done

@@ -12,7 +12,12 @@ DOCKER="docker"
 if ! docker info >/dev/null 2>&1; then DOCKER="sudo docker"; fi
 compose() { $DOCKER compose "$@"; }
 # Pass the terminal's colour capability into the container (truecolor sprites when supported).
-app() { compose exec ${COLORTERM:+-e COLORTERM="$COLORTERM"} "$@"; }
+# The host terminal's size goes along: `docker compose exec` may report 80 columns at first.
+app() {
+  local -a size=()
+  [ -t 1 ] && size=(-e "COLUMNS=$(tput cols 2>/dev/null || echo 80)" -e "LINES=$(tput lines 2>/dev/null || echo 24)")
+  compose exec ${COLORTERM:+-e COLORTERM="$COLORTERM"} "${size[@]}" "$@"
+}
 healthy() { compose exec -T app curl -fsS --noproxy "*" http://127.0.0.1:8080/api/health 2>/dev/null; }
 wait_healthy() { local n; for n in $(seq 1 90); do healthy >/dev/null && return 0; sleep 2; done; return 1; }
 version() { grep -o '"version": "[^"]*"' package.json | cut -d'"' -f4; }
