@@ -473,10 +473,22 @@ docker compose exec -it app codex login --device-auth
 **Gemini (선택, Google 계정)**
 
 ```bash
-docker compose exec -it -e NO_BROWSER=true app gemini
+aa login gemini
 ```
 
-"Login with Google"을 고르고, 화면의 주소를 브라우저에서 열어 로그인한 뒤 받은 코드를 붙여 넣고 `/quit`로 나옵니다. 설정에서 Gemini를 고르면 기능 플래그 `executors.gemini`도 자동으로 켜집니다.
+메뉴 없이 바로 로그인 주소가 나옵니다. 주소를 브라우저에서 열어 Google 계정으로 로그인하고, 받은 코드를 붙여 넣은 뒤 Enter를 한 번 누르세요. 입력창(`>`)이 나오면 `/quit`로 나옵니다. 설정에서 Gemini를 고르면 기능 플래그 `executors.gemini`도 자동으로 켜집니다.
+
+`aa login gemini`는 로그인 전에 남아 있던 Gemini 프로세스를 닫고, 로그인 방식을 "Login with Google"로 고정합니다. 끝나면 로그인 정보가 저장됐는지 확인합니다. 저장되지 않았으면 Gemini가 남긴 실패 이유와 해결 방법을 보여 줍니다. 자주 나오는 이유는 아래와 같습니다.
+
+| 이유 | 해결 |
+|---|---|
+| 회사·학교(Google Workspace) 계정 (`DASHER_USER`, `GOOGLE_CLOUD_PROJECT`) | 개인 Gmail 계정으로 로그인합니다. |
+| 무료 대상이 아닌 계정 (`INELIGIBLE_ACCOUNT`) | 다른 개인 Gmail 계정으로 로그인합니다. |
+| 지원하지 않는 지역·네트워크 (`UNSUPPORTED_LOCATION`) | 해당 서버에서는 무료 Gemini CLI를 쓸 수 없습니다. |
+| 계정 확인 필요 (`validation`) | 다시 로그인한 뒤 "Verify your account"를 골라 확인을 마칩니다. |
+| `invalid_grant` | 코드가 틀렸거나 만료됐습니다. 새 주소로 다시 로그인합니다. |
+
+API 키 입력 화면("Enter Gemini API Key")이 나와도 키는 넣지 마세요. AgentAgency는 Gemini를 Google 계정 로그인으로만 씁니다.
 
 **Cursor (선택, Cursor 구독)**
 
