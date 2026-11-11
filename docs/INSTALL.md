@@ -183,17 +183,17 @@ OCI Always Free(ARM), AWS, Azure, GCP, 일반 VPS 모두 됩니다. 특정 클�
 
 ### 1.1.1 작은 서버에 스왑 추가 (RAM 4GB 미만일 때)
 
-디스크 일부를 메모리처럼 쓰게 해 메모리 부족을 덜어 줍니다. 느려지지만 작업이 멈추지는 않습니다. 아래는 4GB 스왑을 만들고 재부팅 후에도 유지하는 명령입니다.
+디스크 일부를 메모리처럼 쓰게 해 메모리 부족을 덜어 줍니다. 느려지지만 작업이 멈추지는 않습니다. 아래는 4GB 스왑을 만들고 재부팅 후에도 유지하는 명령입니다. 서버에 이미 `/swapfile`이 있으면(Ubuntu 클라우드 이미지에 흔합니다) 먼저 끈 뒤 4GB로 다시 만듭니다.
 
 ```bash
-sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+sudo swapoff /swapfile 2>/dev/null; sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 ```
 
 ```bash
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-`free -h`의 Swap 줄에 4.0Gi가 보이면 됩니다. AgentAgency는 남은 스왑의 절반을 사용 가능한 메모리로 계산합니다.
+`free -h`의 Swap 줄에 4.0Gi가 보이면 됩니다. `fallocate: Text file busy`가 나오면 기존 스왑이 아직 켜져 있다는 뜻입니다. `swapoff`가 `Cannot allocate memory`로 실패하면 메모리가 모자란 것이니 `aa stop`으로 잠시 멈춘 뒤 다시 실행하고, 끝나면 `aa start`로 켜세요. AgentAgency는 남은 스왑의 절반을 사용 가능한 메모리로 계산합니다.
 
 ### 1.2 Docker 설치
 
