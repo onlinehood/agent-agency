@@ -139,7 +139,7 @@ Claude Code처럼 한 단계씩 진행됩니다. 질문에는 ↑↓(또는 숫�
 | `aa config` | 설정 바꾸기 (모든 설정) |
 | `aa status` | 실행 상태 |
 | `aa logs` | 로그 보기 (Ctrl+C로 나가기) |
-| `aa login claude` / `codex` / `gemini` | AI 구독 로그인 |
+| `aa login claude` / `codex` / `gemini` / `cursor` | AI 구독 로그인 |
 | `aa doctor` | 전체 연결 진단 |
 | `aa key` | 마스터 키 꺼내기 (설치 후 한 번 꼭 보관, [7.1](#71-꼭-해-둘-백업-마스터-키)) |
 | `aa backup` | 지금 백업 |
@@ -498,7 +498,7 @@ Cursor Agent CLI는 기본 이미지에 들어 있지 않습니다. 먼저 서�
 aa cursor
 ```
 
-`.env`에 `INSTALL_CURSOR_CLI=true`가 들어가서 `aa update` 뒤에도 유지됩니다. 설치가 끝나면 `aa config` → AI 구독에서 Cursor를 골라 로그인합니다(`cursor-agent login`, 기능 플래그 `executors.cursor`도 자동으로 켜짐).
+`.env`에 `INSTALL_CURSOR_CLI=true`가 들어가서 `aa update` 뒤에도 유지됩니다. 설치가 끝나면 `aa config` → AI 구독에서 Cursor를 골라 로그인합니다. 화면의 주소를 브라우저에서 열어 Cursor 계정으로 로그인하면 터미널이 자동으로 이어지고, 실제 실행 검증까지 합니다. 기능 플래그 `executors.cursor`도 자동으로 켜집니다. 로그인만 다시 하려면 `aa login cursor`를 씁니다. 로그인 정보(`~/.config/cursor`)는 별도 볼륨에 저장돼 `aa update` 뒤에도 남습니다.
 
 **나중에 추가하기**
 

@@ -36,7 +36,7 @@ const LOGINS: LoginSpec[] = [
   { id: "claude-cli", name: "Claude", provider: "anthropic", agentName: "클로드", guide: "Claude Pro/Max 구독 계정으로 로그인합니다. 화면의 주소를 내 PC 브라우저에서 열고, 받은 코드를 여기에 붙여 넣으세요.", command: (cfg) => ({ cmd: cfg.CLAUDE_CLI_PATH, args: ["auth", "login", "--claudeai"] }) },
   { id: "codex-cli", name: "Codex", provider: "openai", agentName: "코덱스", guide: "ChatGPT Plus/Pro 계정으로 로그인합니다. 화면의 주소를 열고 표시된 코드를 입력하세요.", command: (cfg) => ({ cmd: cfg.CODEX_CLI_PATH, args: ["login", "--device-auth"] }) },
   { id: "gemini-cli", name: "Gemini", provider: "google", agentName: "제미니", flag: "executors.gemini", guide: "Google 계정으로 로그인합니다. 화면의 주소를 열고 받은 코드를 붙여 넣은 뒤, 입력창이 나오면 /quit 를 입력하세요.", command: () => ({ cmd: process.execPath, args: [process.argv[1]!, "gemini-login"] }) },
-  { id: "cursor-cli", name: "Cursor", provider: "cursor", agentName: "커서", flag: "executors.cursor", guide: "Cursor 구독 계정으로 로그인합니다.", command: (cfg) => ({ cmd: cfg.CURSOR_CLI_PATH, args: ["login"] }) },
+  { id: "cursor-cli", name: "Cursor", provider: "cursor", agentName: "커서", flag: "executors.cursor", guide: "Cursor 구독 계정으로 로그인합니다. 화면의 주소를 브라우저에서 열어 로그인하면 자동으로 이어집니다.", command: (cfg) => ({ cmd: cfg.CURSOR_CLI_PATH, args: ["login"], env: { NO_OPEN_BROWSER: "1" } }) },
 ];
 
 /** Which account each CLI logs in with (shown when picking). */

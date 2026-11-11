@@ -34,6 +34,16 @@ export function pinOAuth(home = geminiHome()): void {
   fs.writeFileSync(file, `${JSON.stringify(j, null, 2)}\n`);
 }
 
+/** The auth method Gemini currently has saved (null when unset or unreadable). */
+export function savedAuthType(home = geminiHome()): string | null {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(home, "settings.json"), "utf8"));
+    return j?.security?.auth?.selectedType ?? j?.selectedAuthType ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const isGeminiCmd = (argv: string[]): boolean => argv.some((a) => path.basename(a) === "gemini" || a.includes("@google/gemini-cli"));
 
 /** Kill other Gemini CLI processes (not this process or its ancestors). Returns the pids signalled. */
@@ -74,24 +84,25 @@ export interface LoginDiagnosis {
   ok: boolean;
   reason?: string;
   hint?: string;
+  /** Last error/warning lines of the debug log when no known reason matched (for a screenshot). */
+  logTail?: string;
 }
 
 const REASON = /(IneligibleTier|ineligible|not eligible|Account validation required|ValidationRequired|ProjectIdRequired|GOOGLE_CLOUD_PROJECT|Failed to sign in|Failed to authenticate|Error authenticating|invalid_grant|UNSUPPORTED_LOCATION|UNKNOWN_LOCATION|RESTRICTED_AGE|RESTRICTED_NETWORK|DASHER_USER|INELIGIBLE_ACCOUNT|NON_USER_ACCOUNT|permission denied|PERMISSION_DENIED)/i;
 
 /** After `gemini` exits: were Login-with-Google credentials saved? If not, why (from the debug log)? */
-export function diagnoseLogin(home = geminiHome(), logFile?: string): LoginDiagnosis {
+export function diagnoseLogin(home = geminiHome(), logFile?: string, fellBack = false): LoginDiagnosis {
   if (fs.existsSync(path.join(home, "oauth_creds.json"))) return { ok: true };
-  let lines: string[] = [];
-  if (logFile && fs.existsSync(logFile)) {
-    lines = fs
-      .readFileSync(logFile, "utf8")
-      .split("\n")
-      .filter((l) => REASON.test(l) && !l.includes("[DEBUG]"))
-      .map((l) => l.replace(/\s+/g, " ").trim().slice(0, 220));
-  }
+  let all: string[] = [];
+  if (logFile && fs.existsSync(logFile)) all = fs.readFileSync(logFile, "utf8").split("\n").map((l) => l.replace(/\s+/g, " ").trim().slice(0, 220));
+  const lines = all.filter((l) => REASON.test(l) && !l.includes("[DEBUG]"));
   const reason = [...new Set(lines)].slice(-3).join("\n") || undefined;
-  return { ok: false, reason, hint: hintFor(reason ?? "") };
+  const tail = reason ? undefined : [...new Set(all.filter((l) => /\[(ERROR|WARN)\]/.test(l)))].slice(-6).join("\n") || (all.some(Boolean) ? undefined : "(Gemini 기록이 비어 있어요)");
+  return { ok: false, reason, logTail: tail, hint: reason ? hintFor(reason) : fellBack ? FELL_BACK_HINT : hintFor("") };
 }
+
+const FELL_BACK_HINT =
+  "Google 로그인 직후 Gemini가 스스로 API 키 방식으로 바꿨어요. Google이 이 계정에 무료 Gemini CLI(Code Assist)를 열어 주지 않았다는 뜻이에요. 회사·학교 계정이면 개인 Gmail 계정으로 해 보세요. 개인 계정이라면 Google 쪽 제한(나이 인증, 계정 확인 등)일 수 있어요. Gemini는 선택 사항이라 Claude·Codex만으로도 운영됩니다.";
 
 function hintFor(reason: string): string {
   if (/DASHER_USER|GOOGLE_CLOUD_PROJECT|ProjectIdRequired/i.test(reason)) return "회사·학교(Google Workspace) 계정은 Google Cloud 프로젝트가 있어야 해요. 개인 Gmail 계정으로 다시 로그인해 보세요.";
