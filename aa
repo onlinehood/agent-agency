@@ -114,7 +114,7 @@ menu() {
   [ "${#where}" -gt 40 ] && where="…${where: -39}"
   echo
   # Mascot on the left, name / state / location on the right.
-  local -a right=("" "${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}" "")
+  local -a right=("${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}")
   local -a lines=()
   for ((i = 0; i < ${#TUI_ART_PLAIN[@]}; i++)); do lines+=(" $(tui_art "$i")   ${right[$i]:-}"); done
   TUI_BOX_MIN=52 tui_box "${lines[@]}"

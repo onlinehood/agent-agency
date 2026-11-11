@@ -286,7 +286,7 @@ describe("terminal prompts and rendering", () => {
   });
 
   it("renders the mascot with two pixels per cell in truecolor, 256 colours or none", () => {
-    expect(mascot("truecolor")).toHaveLength(5);
+    expect(mascot("truecolor")).toHaveLength(3);
     expect(mascot("truecolor").join("")).toContain("38;2;");
     expect(mascot("256").join("")).toMatch(/38;5;\d+/);
     expect(mascot("256").join("")).not.toContain("38;2;");

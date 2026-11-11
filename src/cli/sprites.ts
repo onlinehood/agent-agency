@@ -1,13 +1,12 @@
 /**
  * The AgentAgency mascot shown in the setup/config banner and the `aa` menu: a small orange mochi
- * with an antenna. Original design, rendered with half blocks (14×10 px = 5 terminal lines).
+ * with an antenna. Original design, rendered with half blocks (9×6 px = 3 terminal lines).
  */
 
 type Px = readonly [string, number]; // truecolor hex + hand-picked xterm-256 code
 
 const PALETTE: Record<string, Px> = {
   a: ["#ef5b5b", 203], // antenna tip
-  b: ["#8a93a3", 246], // antenna stem
   c: ["#f39a5f", 209], // body
   d: ["#ffc8a0", 223], // highlight
   e: ["#1e1a2b", 234], // eyes
@@ -16,16 +15,12 @@ const PALETTE: Record<string, Px> = {
 };
 
 export const MASCOT_ROWS = [
-  ".......aa.....",
-  ".......b......",
-  ".......b......",
-  "....cccccc....",
-  "..cddccccccc..",
-  ".cdcccccccccc.",
-  "cccceccccecccc",
-  "cccececcececcf",
-  "fccgccffccgccf",
-  ".ffffffffffff.",
+  "....a....",
+  "..cdccc..",
+  ".cdccccc.",
+  "ccecccecf",
+  "cgcccccgf",
+  ".fffffff.",
 ] as const;
 
 export type ColorMode = "truecolor" | "256" | "none";

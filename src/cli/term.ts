@@ -86,11 +86,13 @@ export function box(lines: string[], opts: { title?: string; color?: (s: string)
 /** Welcome banner: the mascot on the left, title and hints on the right, in an orange box. */
 export function welcome(version: string, subtitle: string, hints: string[]): string {
   const art = mascot();
-  const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), "", subtitle];
-  const top = Math.max(0, Math.floor((art.length - right.length) / 2));
+  const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), subtitle];
+  const rows = Math.max(art.length, right.length);
+  const artTop = Math.floor((rows - art.length) / 2);
+  const textTop = Math.floor((rows - right.length) / 2);
   const artW = Math.max(...art.map((l) => width(l)));
   const lines: string[] = [""];
-  for (let i = 0; i < art.length; i++) lines.push(` ${pad(art[i]!, artW)}   ${right[i - top] ?? ""}`);
+  for (let i = 0; i < rows; i++) lines.push(` ${pad(art[i - artTop] ?? "", artW)}   ${right[i - textTop] ?? ""}`);
   lines.push("", ...hints.map((h) => ` ${c.dim(h)}`));
   return box(lines, { width: Math.min(termWidth() - 4, 72) });
 }
