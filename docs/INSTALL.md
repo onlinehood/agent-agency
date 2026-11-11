@@ -477,15 +477,16 @@ AI 팀은 작업 결과를 GitHub PR로 올립니다. 계정 종류에 따라 �
    - Administration: Read and write (저장소 생성)
    - Contents: Read and write
    - Pull requests: Read and write
-   - Checks: Read-only
-   - Metadata: Read-only
+   - Metadata: Read-only (자동으로 "Required"로 들어갑니다)
+
+   Fine-grained 토큰 화면에는 "Checks" 권한이 없습니다. 필요 없으니 찾지 않아도 됩니다.
 4. 만든 토큰(`github_pat_...`)을 설정 화면에 붙여 넣습니다. 이어서 새 저장소를 만들 계정/조직을 묻습니다(기본값: 토큰 주인).
 
 **GitHub App 만들기 (조직용)**
 
 1. 조직 Settings → Developer settings → GitHub Apps → New GitHub App
 2. 이름과 Homepage URL(아무 주소)을 입력하고, Webhook의 "Active" 체크를 해제합니다.
-3. Repository permissions를 PAT와 같은 다섯 가지로 지정합니다(Administration 쓰기는 조직에 새 저장소를 만들 때 필요).
+3. Repository permissions를 PAT와 같게 지정합니다(Administration 쓰기는 조직에 새 저장소를 만들 때 필요). GitHub App에는 Checks 권한도 있지만 필수는 아닙니다.
 4. 만든 뒤 "Generate a private key"로 키 파일(.pem)을 내려받습니다.
 5. "Install App"에서 조직에 설치합니다. 설치 후 주소창의 `.../installations/숫자` 가 Installation ID입니다.
 6. 설정 화면에 App ID, Installation ID를 넣고, 키 파일(.pem) 내용을 통째로 붙여 넣습니다(마지막 줄 `-----END ... PRIVATE KEY-----`에서 자동으로 확인됩니다). 마지막으로 조직 이름을 넣습니다.

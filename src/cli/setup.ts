@@ -357,7 +357,7 @@ export class SetupCli {
         }
         if (mode === "pat") {
           this.note("GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token");
-          this.line(subLine(c.dim("Repository access: All repositories · 권한: Administration, Contents, Pull requests = Read and write / Checks, Metadata = Read")));
+          this.line(subLine(c.dim("Repository access: All repositories · 권한: Administration, Contents, Pull requests = Read and write (Metadata는 자동)")));
           const token = await this.p.password({ message: "GitHub 토큰", placeholder: "github_pat_...", validate: (v) => (/^(github_pat_|ghp_)\w{20,}/.test(v) ? null : "github_pat_ 로 시작하는 토큰") });
           const who = await this.withSpinner("GitHub 확인 중", () => this.svc.connectGitHub({ mode: "pat", token }));
           this.ok(`${who} 로 연결했어요`);
