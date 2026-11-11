@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/onlinehood/agent-agency/main/instal
 - 마스터 라운지: `새 프로젝트 만들어줘 "가계부"` 라고 말하면 AI 팀이 토론해 이름·스택·팀·비공개 저장소를 제안합니다. 승인하면 Topic이 생성됩니다.
 - 리서치: `AI 코딩 도구 시장 조사 보고서 프로젝트 만들어줘` 또는 `/new research <주제>` 로 출처가 달린 보고서를 만드는 리서치 프로젝트를 시작합니다.
 - 기존 저장소: `https://github.com/org/repo 가져와줘` 라고 말하면 읽기 전용으로 분석하고 팀 구성안을 냅니다. 승인한 뒤에만 연결합니다.
-- 프로젝트 Topic: `@클로드 로그인 화면 추가해줘` 처럼 작업을 지시합니다. 아이디어성 문장은 후보 목록에 저장됩니다.
+- 프로젝트 Topic: `@클로드 로그인 화면 추가해줘` 처럼 작업을 지시합니다. `다들 어떻게 생각해?`, `아이디어 있어?` 같은 팀 질문에는 여러 에이전트가 각자 답합니다. `나중에 다크모드 있으면 좋겠다` 같은 아이디어 문장은 후보 목록에 저장됩니다.
 - 명령어: `/status` `/mode` `/agents` `/agent` `/team` `/approvals` `/usage` `/experiment` `/baseline` `/maintenance` `/upgrade` `/exec` `/executors` `/pause` `/resume` `/cancel` `/priority` `/complete` `/archive` `/restore` `/delete` `/ideas` `/flags`
 - 승인 카드의 "✏️ 수정 요청"을 누르고 고칠 점을 메시지로 보내면 그 의견을 반영해 다시 기획하거나 같은 PR을 수정합니다.
 
@@ -68,10 +68,6 @@ CLI: `agent-agency start | migrate | doctor | verify-executor <id> | backup | re
 - 공식 구독 인증으로 할 수 없는 자동화는 쿠키 추출이나 비공식 세션 자동화로 우회하지 않습니다.
 - 확인되지 않은 기능은 "지원됨"으로 표시하지 않습니다. 진단 화면에 지원/미지원/미확인과 그 사유를 그대로 보여 줍니다.
 - 세계관·친밀도는 표현 레이어일 뿐입니다. 품질 게이트, 보안, 승인, 권한, 비용 정책은 모든 모드에서 같습니다.
-
-## License
-
-MIT
 
 ## 라이선스
 
