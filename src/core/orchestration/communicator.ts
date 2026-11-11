@@ -82,8 +82,8 @@ export class Communicator {
   }
 
   /** Style instructions for an agent prompt (expression only). */
-  async styleFor(user: User, agent: Agent, listenerRef: ListenerRef, situation: Situation): Promise<string> {
-    const sp = await this.speaker(user, { kind: "agent", agent });
+  async styleFor(user: User, agent: Agent, listenerRef: ListenerRef, situation: Situation, functionalRole?: string): Promise<string> {
+    const sp = { ...(await this.speaker(user, { kind: "agent", agent })), functionalRole };
     const li = await this.listener(user, listenerRef);
     return promptFor({
       mode: await this.mode(user),

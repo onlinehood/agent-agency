@@ -160,7 +160,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       const stop = await env.checkStop(task.id);
       if (stop) return { kind: stop };
       task = await this.setState(env, task, { state: "planning" });
-      const built = await ctx.contextBuilder.build({ userId: env.user.id, agent: leader, project, task, stylePolicy: await env.comm.styleFor(env.user, leader, { kind: "user" }, "report") });
+      const built = await ctx.contextBuilder.build({ userId: env.user.id, agent: leader, project, task, stylePolicy: await env.comm.styleFor(env.user, leader, { kind: "user" }, "report", "leader") });
       const out = await env.runner.runWithHandoff(project, { agent: leader, task, purpose: "plan", prompt: this.planPromptFor(task, built.text), cwd: ws.dir, mode: "readonly", sandbox: ws.sandbox, timeoutMs: 10 * 60_000 });
       if (out.needsApproval) return this.requestApproval(env, task, "paid_api_usage", "구독 실행기를 사용할 수 없어 종량제 유료 API 사용이 필요합니다. 비용이 발생할 수 있습니다.");
       if (out.status !== "succeeded") return this.execFailure(env, task, "기획", out.error ?? out.status);
@@ -273,7 +273,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       if (task.stage === "implementation" || task.stage === "fix") {
         task = await this.setState(env, task, { state: "in_progress", attempts: task.attempts + 1 });
         const feedback = task.stage === "fix" ? String(task.checkpoint.lastFeedback ?? "") : undefined;
-        const built = await ctx.contextBuilder.build({ userId: env.user.id, agent: implementer, project, task, peers: [reviewer], stylePolicy: await env.comm.styleFor(env.user, implementer, reviewer.id === implementer.id ? { kind: "user" } : { kind: "agent", agent: reviewer }, reviewer.id === implementer.id ? "report" : "handoff") });
+        const built = await ctx.contextBuilder.build({ userId: env.user.id, agent: implementer, project, task, peers: [reviewer], stylePolicy: await env.comm.styleFor(env.user, implementer, reviewer.id === implementer.id ? { kind: "user" } : { kind: "agent", agent: reviewer }, reviewer.id === implementer.id ? "report" : "handoff", "implementer") });
         const out = await env.runner.runWithHandoff(project, {
           agent: implementer,
           task,
@@ -355,7 +355,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         task = await this.setState(env, task, { state: "review" });
         const diff = await ctx.workspaces.git.diff(ws.dir, ws.base);
         const gateText = task.checkpoint.qualityGate ? summarizeGate(task.checkpoint.qualityGate) : "미실행";
-        const style = await env.comm.styleFor(env.user, reviewer, reviewer.id === implementer.id ? { kind: "user" } : { kind: "agent", agent: implementer }, reviewer.id === implementer.id ? "report" : "discussion");
+        const style = await env.comm.styleFor(env.user, reviewer, reviewer.id === implementer.id ? { kind: "user" } : { kind: "agent", agent: implementer }, reviewer.id === implementer.id ? "report" : "discussion", "reviewer");
         const out = await env.runner.runWithHandoff(project, {
           agent: reviewer,
           task,

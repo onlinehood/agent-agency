@@ -207,7 +207,7 @@ describe("orchestrator", () => {
     }
     await app.orchestrator.handleMessage(msg("/mode construction"));
     expect(app.out.lounge.at(-1)!.msg.text).toContain("건물주님");
-    expect(app.out.lounge.at(-1)!.msg.header).toContain("십장");
+    expect(app.out.lounge.at(-1)!.msg.header).toContain("현장소장");
     expect((await app.ctx.repos.memories.list(project.id)).length).toBe(before.mem.length);
     expect((await app.ctx.repos.tasks.listByProject(project.id)).length).toBe(before.tasks.length);
     expect((await app.ctx.repos.agents.get(claude.id)).name).toBe("클로드");
