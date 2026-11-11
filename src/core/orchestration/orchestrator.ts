@@ -11,7 +11,7 @@ import { baselineSummary } from "../../quality/baseline.js";
 import { runBackup } from "../../backup/service.js";
 import { APP_VERSION } from "../../version.js";
 import path from "node:path";
-import { classify, detectWorkType, slugify } from "./classifier.js";
+import { classify, detectWorkType, slugify, type Classified } from "./classifier.js";
 import { isInternal, progressText, projectStatusKo, statusSummary } from "./progress.js";
 import { allModes, modeDef, isOrganizationMode } from "../organization/modes.js";
 import { assertProjectTransition } from "../projects/lifecycle.js";
@@ -214,6 +214,7 @@ export class Orchestrator {
   private async handleNatural(user: User, project: Project | null, text: string, attachments: InboundAttachment[]): Promise<void> {
     const agents = await this.ctx.repos.agents.listByOwner(user.id, true);
     const c = classify(text, agents, { inProjectTopic: !!project });
+    const dialogue = await this.recentDialogue(user, project);
     await this.ctx.repos.requests.add({ userId: user.id, projectId: project?.id ?? null, source: "telegram", rawText: text, classification: c.classification, mentionedAgentIds: c.mentionedAgentIds });
 
     if (/^(토론\s*연장|연장해|더 토론)/.test(text)) return this.extendDiscussion(user, project);
@@ -230,6 +231,13 @@ export class Orchestrator {
       if (r.count >= 2) await this.moderatorSays(user, project, `반복된 피드백이라 프로젝트 선호 규칙으로 기억할게요: "${text}"`, "memory.preference");
     }
 
+    // Clear commands are routed by rules at once; everything conversational is understood by an AI
+    // that reads the recent conversation (and answers in the same call when it is a question).
+    if (needsUnderstanding(c, project, text) && (await this.understand(user, project, c, attachments, dialogue))) return;
+    return this.routeByRule(user, project, c, attachments);
+  }
+
+  private async routeByRule(user: User, project: Project | null, c: Classified, attachments: InboundAttachment[]): Promise<void> {
     switch (c.classification) {
       case "status":
         return this.system(user, null, await this.statusText(user), "status");
@@ -244,15 +252,8 @@ export class Orchestrator {
         return this.moderatorSays(user, project, "아이디어 후보 목록에 저장해 두었어요. 다음 기획 때 다시 제안할게요.", "idea.saved");
       }
       case "task_request": {
-        let target = project;
-        if (!target) {
-          const all = (await this.ctx.repos.projects.listByOwner(user.id)).filter((p) => p.workType !== "lounge");
-          const active = all.filter((p) => p.status === "active");
-          if (active.length === 1) target = active[0]!;
-          else if (active.length > 1) return this.moderatorSays(user, null, `어느 프로젝트의 작업인지 해당 프로젝트 Topic에서 말씀해 주세요. (진행 중: ${active.map((p) => p.name).join(", ")})`, "clarify");
-          else if (all.length) return this.moderatorSays(user, null, `지금 바로 작업할 수 있는 프로젝트가 없어요. (${all.map((p) => `${p.name}: ${projectStatusKo(p.status)}`).join(", ")}) 일시정지된 프로젝트는 해당 Topic에서 /resume 으로 재개해 주세요.`, "clarify");
-          else return this.moderatorSays(user, null, "아직 프로젝트가 없어요. \"새 프로젝트 만들어줘\"라고 말씀해 주시면 제안을 준비할게요.", "clarify");
-        }
+        const target = await this.resolveTarget(user, project);
+        if (typeof target === "string") return this.moderatorSays(user, null, target, "clarify");
         const { text: taskText, title } = await this.withRecentExchange(user, project, target, c.cleanedText);
         await this.createTask(user, target, taskText, c.mentionedAgentIds, attachments, { title }).catch((e: Error) => {
           if (!(e instanceof AppError && e.code === "project_not_active")) throw e;
@@ -265,6 +266,105 @@ export class Orchestrator {
       case "unknown":
       default:
         return this.answer(user, project, c.cleanedText, c.mentionedAgentIds);
+    }
+  }
+
+  /** The project a task is for: the current topic, a named project, or the only active one; otherwise a question to ask. */
+  private async resolveTarget(user: User, project: Project | null, name?: string): Promise<Project | string> {
+    if (project) return project;
+    const all = (await this.ctx.repos.projects.listByOwner(user.id)).filter((p) => p.workType !== "lounge");
+    const active = all.filter((p) => p.status === "active");
+    const n = name?.trim().toLowerCase();
+    const named = n ? active.find((p) => p.name.toLowerCase() === n || p.slug === n) ?? active.find((p) => p.name.toLowerCase().includes(n) || n.includes(p.name.toLowerCase())) : undefined;
+    if (named) return named;
+    if (active.length === 1) return active[0]!;
+    if (active.length > 1) return `어느 프로젝트의 작업인지 해당 프로젝트 Topic에서 말씀해 주세요. (진행 중: ${active.map((p) => p.name).join(", ")})`;
+    if (all.length) return `지금 바로 작업할 수 있는 프로젝트가 없어요. (${all.map((p) => `${p.name}: ${projectStatusKo(p.status)}`).join(", ")}) 일시정지된 프로젝트는 해당 Topic에서 /resume 으로 재개해 주세요.`;
+    return "아직 프로젝트가 없어요. \"새 프로젝트 만들어줘\"라고 말씀해 주시면 제안을 준비할게요.";
+  }
+
+  /** The last half hour in this place (lounge or topic): the user's messages and what was said back. */
+  private async recentDialogue(user: User, project: Project | null): Promise<string> {
+    const since = new Date(Date.now() - 30 * 60_000);
+    const mine = (await this.ctx.repos.requests.listRecent(user.id, project?.id ?? null, since, 6)).map((r) => ({ at: r.createdAt, line: `사용자: ${r.rawText}` }));
+    const said = (await this.ctx.repos.conversations.listRecentIn(project?.id ?? null, since, 8)).filter((m) => !/^(progress|alert)/.test(m.kind)).map((m) => ({ at: m.createdAt, line: m.renderedText.replace(/\s+/g, " ").slice(0, 600) }));
+    return [...mine, ...said]
+      .sort((a, b) => a.at.localeCompare(b.at))
+      .map((x) => `- ${x.line}`)
+      .join("\n");
+  }
+
+  /**
+   * One AI call that decides what a conversational message means — using the recent conversation —
+   * and answers it when it is a question. Returns false when no AI could decide, so rules route it.
+   */
+  private async understand(user: User, project: Project | null, c: Classified, attachments: InboundAttachment[], dialogue: string): Promise<boolean> {
+    const speaker = await this.pickSpeaker(user, project, c.mentionedAgentIds);
+    if (!speaker) return false;
+    const text = c.cleanedText;
+    const ctxProject = project && project.workType !== "lounge" ? project : null;
+    const lounge = await this.loungeProject(user);
+    const task = await this.internalTask(lounge, `대화: ${text.slice(0, 60)}`, "question");
+    const context = ctxProject ? (await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text : await this.loungeContext(user);
+    const style = await this.comm.styleFor(user, speaker, { kind: "user" }, "report");
+    const prompt = [
+      "당신은 사용자의 AI 개발 조직 구성원입니다. 사용자의 마지막 메시지를 직전 대화와 함께 이해해 의도를 정하고, JSON 하나만 출력하세요.",
+      "의도:",
+      '- "answer": 질문, 잡담, 진행 상황 문의, 의견 요청 → reply에 답변. 모르면 모른다고 하고, 하지 않은 일을 했다고 말하지 마세요.',
+      '- "task": 지금 무언가를 만들거나 고치거나 조사하라는 지시. 직전에 AI가 제안한 내용에 "알아서 해", "그렇게 해줘", "좋아 진행해"라고 답한 경우도 포함 → task에 실행할 작업을 구체적으로 정리(직전 대화에서 정해진 내용 포함), title에 짧은 제목, project에 대상 프로젝트 이름(맥락의 프로젝트 중), reply에 한 줄 확인.',
+      '- "idea": 지금 하라는 게 아니라 나중에 고려할 아이디어 → reply에 짧은 확인.',
+      '- "new_project": 새 프로젝트를 만들자는 요청.',
+      '애매하면 "answer"로 정하고 무엇을 원하는지 짧게 되물으세요. 작업을 직접 실행하지는 마세요.',
+      '형식: {"intent": "answer|task|idea|new_project", "reply": "...", "task": "...", "title": "...", "project": "..."}',
+      `\n${context}`,
+      dialogue ? `\n## 직전 대화 (오래된 것부터)\n${dialogue}` : "",
+      `\n## reply 말투\n${style}`,
+      `\n사용자 메시지: ${text}`,
+    ].join("\n");
+    const cwd = ctxProject ? this.ctx.workspaces.repoDir(ctxProject) : this.ctx.config.dataDir;
+    if (ctxProject) await this.ctx.workspaces.ensureRepo(ctxProject).catch(() => undefined);
+    const out = await this.runner.run({ agent: speaker, task, project: ctxProject, purpose: "discuss", prompt, cwd, mode: "readonly", kinds: ["local_cli", "paid_api"], timeoutMs: 5 * 60_000 });
+    if (out.status !== "succeeded") return false;
+    const j = extractJson<{ intent?: string; reply?: string; task?: string; title?: string; project?: string }>(out.text);
+    const say = async (body: string, kind: string) => {
+      await this.comm.say({ user, project, speaker: { kind: "agent", agent: out.agent }, listener: { kind: "user" }, situation: "report", body: body.slice(0, 3500), inCharacter: true, machineState: { kind, executionId: out.executionId } });
+    };
+    if (!j) {
+      // Plain text back: it answered.
+      await say(out.text, "answer");
+      await this.ctx.repos.settings.set(project ? "project" : "user", project?.id ?? user.id, "answer.last", { question: text, answer: out.text.slice(0, 2000), at: Date.now() });
+      return true;
+    }
+    const reply = typeof j.reply === "string" ? j.reply.trim() : "";
+    switch (j.intent) {
+      case "answer":
+        if (!reply) return false;
+        await say(reply, "answer");
+        await this.ctx.repos.settings.set(project ? "project" : "user", project?.id ?? user.id, "answer.last", { question: text, answer: reply.slice(0, 2000), at: Date.now() });
+        return true;
+      case "task": {
+        const target = await this.resolveTarget(user, project, typeof j.project === "string" ? j.project : undefined);
+        if (typeof target === "string") {
+          await this.moderatorSays(user, null, target, "clarify");
+          return true;
+        }
+        const body = typeof j.task === "string" && j.task.trim() ? `${j.task.trim()}\n\n[사용자 원문] ${text}` : text;
+        const title = typeof j.title === "string" && j.title.trim() ? j.title.trim() : undefined;
+        await this.createTask(user, target, body, c.mentionedAgentIds, attachments, { title }).catch((e: Error) => {
+          if (!(e instanceof AppError && e.code === "project_not_active")) throw e;
+        });
+        return true;
+      }
+      case "idea":
+        await this.ctx.repos.ideas.add(user.id, project?.id ?? null, text);
+        await say(reply || "아이디어 후보 목록에 저장해 두었어요. 다음 기획 때 다시 제안할게요.", "idea.saved");
+        return true;
+      case "new_project":
+        if (project) return false;
+        await this.proposeProject(user, text, c.projectName, c.mentionedAgentIds, detectWorkType(text));
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -440,9 +540,16 @@ export class Orchestrator {
     const ideas = await this.ctx.repos.ideas.list(null);
     return [
       "## 마스터 라운지",
-      projects.length ? `프로젝트: ${projects.map((p) => `${p.name}(${projectStatusKo(p.status)})`).join(", ")}` : "프로젝트 없음",
+      projects.length ? `프로젝트:\n${(await Promise.all(projects.map(async (p) => `- ${p.name} (${projectStatusKo(p.status)}): ${await this.taskBrief(p)}`))).join("\n")}` : "프로젝트 없음",
       ideas.length ? `아이디어 후보: ${ideas.map((i) => i.text).slice(0, 5).join(" / ")}` : "",
     ].join("\n");
+  }
+
+  private async taskBrief(p: Project): Promise<string> {
+    const tasks = (await this.ctx.repos.tasks.listByProject(p.id)).filter((t) => !isInternal(t));
+    if (!tasks.length) return "아직 작업 없음 (지시를 받아야 시작)";
+    const open = tasks.filter((t) => !["done", "cancelled", "failed"].includes(t.state));
+    return `작업 ${tasks.length}개${open.length ? `, 진행/대기: ${open.slice(0, 3).map((t) => `${t.title}(${t.state})`).join(", ")}` : ", 모두 종료"}`;
   }
 
   private async extendDiscussion(user: User, project: Project | null): Promise<void> {
@@ -1251,4 +1358,21 @@ export function uniqueTeam<T extends { agentId: string; role: string }>(team: T[
     if (!cur || (ROLE_RANK[m.role] ?? 9) < (ROLE_RANK[cur.role] ?? 9)) best.set(m.agentId, m);
   }
   return team.filter((m) => best.get(m.agentId) === m);
+}
+
+/** Clear commands go straight to rules; conversational or ambiguous messages are understood by an AI. */
+export function needsUnderstanding(c: Classified, project: Project | null, text: string): boolean {
+  switch (c.classification) {
+    case "status":
+    case "command":
+    case "import_project":
+    case "discussion":
+      return false;
+    case "new_project":
+      return /[?？]/.test(text);
+    case "task_request":
+      return !project || c.confidence < 0.8;
+    default:
+      return true; // question, idea, unknown
+  }
 }

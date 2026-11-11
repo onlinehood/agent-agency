@@ -60,13 +60,14 @@ describe("orchestrator", () => {
     expect(app.github.calls.filter((c) => c.startsWith("createPrivateRepo"))).toHaveLength(1);
   });
 
-  it("a proposal that lists the same agent twice still activates, and a short follow-up in the lounge becomes the project's first task", async () => {
+  it("a proposal that lists the same agent twice still activates; in the lounge the AI reads the conversation and turns \"알아서 만들어봐\" into the project's first task", async () => {
     const ids: Record<string, string> = {};
     const h = codingHandler();
     app = await makeTestApp({
       claude: (req) => {
         if (req.prompt.includes('다음 JSON만 출력: {"name"')) return JSON.stringify({ name: "simple-calc", slug: "simple-calc", description: "순수 HTML/CSS/JS 계산기", stack: ["HTML", "CSS", "JavaScript"], team: [{ agentId: ids.claude, role: "leader" }, { agentId: ids.codex, role: "implementer" }, { agentId: ids.claude, role: "reviewer" }] });
-        if (req.prompt.includes("질문: 작업 언제해?")) return "지시만 주시면 바로 시작할게요. 정하지 않은 건 기본값(세 파일, 0으로 나누면 Error)으로 진행합니다.";
+        if (req.prompt.includes("사용자 메시지: 작업 언제해?")) return JSON.stringify({ intent: "answer", reply: "지시만 주시면 바로 시작할게요. 기본값은 세 파일, 0으로 나누면 Error 표시예요." });
+        if (req.prompt.includes("사용자 메시지: 알아서 만들어봐")) return JSON.stringify({ intent: "task", task: "simple-calc를 index.html, style.css, script.js로 만들고 0으로 나누면 Error를 표시", title: "계산기 첫 구현", project: "simple-calc", reply: "바로 시작할게요." });
         return h(req);
       },
       codex: h,
@@ -82,21 +83,53 @@ describe("orchestrator", () => {
     expect((await app.ctx.repos.projects.listAgents(project!.id)).map((m) => m.functionalRole).sort()).toEqual(["implementer", "leader"]);
     expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `p:kick:${project!.id}`))).toBe(true);
 
-    // "작업 언제해?" is answered; "알아서 만들어봐" right after goes to the only project, with that answer attached.
+    // The question is understood and answered in one AI call.
     await app.orchestrator.handleMessage(msg("작업 언제해?"));
+    expect(app.claude.calls.filter((r) => r.prompt.includes("작업 언제해?"))).toHaveLength(1);
+    expect(app.out.allText()).toContain("0으로 나누면 Error 표시예요");
+    // The follow-up is read together with that answer and becomes a task in the only project.
     await app.orchestrator.handleMessage(msg("알아서 만들어봐"));
+    const followUp = app.claude.calls.find((r) => r.prompt.includes("사용자 메시지: 알아서 만들어봐"))!;
+    expect(followUp.prompt).toContain("## 직전 대화");
+    expect(followUp.prompt).toContain("0으로 나누면 Error 표시예요");
     expect(app.out.allText()).not.toContain("아직 프로젝트가 없어요");
     const [task] = await app.ctx.repos.tasks.listByProject(project!.id);
-    expect(task!.title).toBe("simple-calc 첫 구현");
-    expect(task!.description).toContain("순수 HTML/CSS/JS 계산기");
-    expect(task!.description).toContain("[직전 대화");
-    expect(task!.description).toContain("0으로 나누면 Error");
+    expect(task!.title).toBe("계산기 첫 구현");
+    expect(task!.description).toContain("index.html, style.css, script.js");
+    expect(task!.description).toContain("[사용자 원문] 알아서 만들어봐");
     // The kickoff button does nothing once a task exists.
     expect((await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `p:kick:${project!.id}`, chatId: "-100123", messageId: 9 })).toast).toContain("이미 작업");
   });
 
+  it("the AI files a later-thought as an idea, and rules still route when the AI gives no usable decision", async () => {
+    app = await makeTestApp({
+      claude: (req) => (req.prompt.includes("사용자 메시지: 다크모드는 나중에 생각해보자") ? JSON.stringify({ intent: "idea", reply: "다크모드는 후보로 적어 둘게요." }) : req.prompt.includes("질문: 진행 상황 어때?") ? "아직 작업이 없어요." : "{}"),
+    });
+    const { user } = await seedUserAndAgents(app);
+    await app.orchestrator.handleMessage(msg("다크모드는 나중에 생각해보자"));
+    expect((await app.ctx.repos.ideas.list(null)).map((i) => i.text)).toEqual(["다크모드는 나중에 생각해보자"]);
+    expect(app.out.allText()).toContain("다크모드는 후보로 적어 둘게요.");
+    // "{}" from the understanding call → the rule path answers the question as before.
+    await app.orchestrator.handleMessage(msg("진행 상황 어때?"));
+    expect(app.out.allText()).toContain("아직 작업이 없어요.");
+    void user;
+  });
+
+  it("without a usable AI decision, a short lounge follow-up still reaches the only project with the last answer attached", async () => {
+    app = await makeTestApp({ claude: (req) => (req.prompt.includes("질문: 작업 언제해?") ? "기본값: 0으로 나누면 Error." : "{}"), codex: () => "{}" });
+    const { user } = await seedUserAndAgents(app);
+    const p = await app.ctx.repos.projects.create({ ownerId: user.id, name: "simple-calc", slug: "simple-calc", description: "순수 HTML/CSS/JS 계산기", stack: [], status: "active", repoMode: "new", workType: "coding" });
+    await app.orchestrator.handleMessage(msg("작업 언제해?"));
+    await app.orchestrator.handleMessage(msg("알아서 만들어봐"));
+    const [task] = await app.ctx.repos.tasks.listByProject(p.id);
+    expect(task!.title).toBe("simple-calc 첫 구현");
+    expect(task!.description).toContain("순수 HTML/CSS/JS 계산기");
+    expect(task!.description).toContain("[직전 대화");
+    expect(task!.description).toContain("0으로 나누면 Error");
+  });
+
   it("an approved project whose activation never finished is completed on startup", async () => {
-    app = await makeTestApp({ claude: codingHandler(), codex: codingHandler() });
+    app = await makeTestApp({ claude: () => "{}", codex: () => "{}" });
     const { user, claude } = await seedUserAndAgents(app);
     const p = await app.ctx.repos.projects.create({ ownerId: user.id, name: "멈춘 프로젝트", slug: "stuck", description: "계산기", stack: [], status: "proposed", repoMode: "new", workType: "coding" });
     const a = await app.ctx.approvals.request({ actorId: user.id, projectId: p.id, action: "create_project", summary: "s", scope: { team: [{ agentId: claude.id, role: "leader" }] } });

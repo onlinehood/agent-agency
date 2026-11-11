@@ -987,6 +987,14 @@ export class ConversationRepo {
     return this.map(await one(this.db, "SELECT * FROM conversation_messages WHERE id=$1", [id]));
   }
 
+  /** Recent messages posted in one place (a project, or the lounge when projectId is null), oldest first. */
+  async listRecentIn(projectId: string | null, since: Date, limit = 8): Promise<ConversationMessage[]> {
+    const params: unknown[] = [since.toISOString(), limit];
+    const where = projectId ? (params.push(projectId), "project_id=$3") : "project_id IS NULL";
+    const rows = await this.db.query(`SELECT * FROM conversation_messages WHERE ${where} AND created_at > $1::timestamptz ORDER BY created_at DESC LIMIT $2`, params);
+    return rows.map((r) => this.map(r)).reverse();
+  }
+
   /** Most recent messages for a project, oldest first. */
   async list(projectId: string, limit = 50, opts: { taskId?: string; speakerIds?: string[] } = {}): Promise<ConversationMessage[]> {
     const conds = ["project_id=$1"];
@@ -1063,6 +1071,14 @@ export class SummaryRepo {
 
 export class RequestRepo {
   constructor(private db: Database) {}
+
+  /** The user's recent messages in one place (a project topic, or the lounge when projectId is null), oldest first. */
+  async listRecent(userId: string, projectId: string | null, since: Date, limit = 8): Promise<Array<{ rawText: string; createdAt: string }>> {
+    const params: unknown[] = [userId, since.toISOString(), limit];
+    const where = projectId ? (params.push(projectId), "project_id=$4") : "project_id IS NULL";
+    const rows = await this.db.query(`SELECT raw_text, created_at FROM requests WHERE user_id=$1 AND ${where} AND created_at > $2::timestamptz ORDER BY created_at DESC LIMIT $3`, params);
+    return rows.map((r: any) => ({ rawText: String(r.raw_text), createdAt: iso(r.created_at) })).reverse();
+  }
 
   async add(input: { userId: string; projectId: string | null; source: string; rawText: string; classification: RequestClassification; mentionedAgentIds: string[] }): Promise<string> {
     const id = newId("req");
