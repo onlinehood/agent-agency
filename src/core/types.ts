@@ -280,6 +280,7 @@ export type RequestClassification =
   | "task_request"
   | "idea"
   | "question"
+  | "discussion"
   | "status"
   | "command"
   | "approval_response"

@@ -135,6 +135,13 @@ describe("classifier", () => {
     expect(classify("@코덱스 로그인 버튼 추가해줘", agents, { inProjectTopic: true })).toMatchObject({ classification: "task_request", mentionedAgentIds: ["a2"] });
     expect(classify("나중에 다크모드 있으면 좋겠다", agents, { inProjectTopic: true }).classification).toBe("idea");
     expect(classify("지금 진행 상황이 어때?", agents, { inProjectTopic: true }).classification).toBe("question");
+    // Asking the team for ideas/opinions is a discussion, not an idea to file away.
+    for (const q of ["아무도 아이디어 없어?", "만들 앱 좋은 아이디어 없어?", "앱 아이디어 추천해줘", "다들 어떻게 생각해?", "다크모드 넣으면 어떨까?"]) {
+      expect(classify(q, agents, { inProjectTopic: false }).classification, q).toBe("discussion");
+    }
+    expect(classify("@클로드 아이디어 있어?", agents, { inProjectTopic: false }).classification).toBe("question"); // one agent asked
+    expect(classify("로그인 화면 추가해줘", agents, { inProjectTopic: true }).classification).toBe("task_request");
+    expect(classify("아이디어: 나중에 알림 기능", agents, { inProjectTopic: false }).classification).toBe("idea");
   });
 });
 

@@ -129,7 +129,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
     if (!task.assignedAgentId) {
       const mentioned = (task.checkpoint.mentionedAgentIds as string[] | undefined) ?? [];
       const asg = await ctx.team.assign(project, { difficulty: task.difficulty, mentionedAgentIds: mentioned }, ["implementer", "reviewer"], { optimize: await ctx.flags.isEnabled("analytics.team_optimization", env.user.id) });
-      if (!asg) return this.block(env, task, "사용 가능한 공식 구독 실행기를 가진 에이전트가 없습니다. 웹 설정에서 실행기 연결 상태를 확인해 주세요.");
+      if (!asg) return this.block(env, task, "사용 가능한 공식 구독 실행기를 가진 에이전트가 없습니다. 서버에서 aa config → AI 구독으로 실행기 연결 상태를 확인해 주세요.");
       task = await this.setState(env, task, { assignedAgentId: asg.implementer.id, reviewerAgentId: asg.reviewer?.id ?? null, state: "planning" });
       await env.comm.say({
         user: env.user,

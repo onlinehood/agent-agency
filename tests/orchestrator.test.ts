@@ -17,6 +17,23 @@ describe("orchestrator", () => {
     expect((await app.ctx.repos.audit.list(10)).some((e) => e.action === "auth.denied")).toBe(true);
   });
 
+  it("a question to the team (\"아무도 아이디어 없어?\") gets answers from the agents, not an idea memo", async () => {
+    const reply = (who: string) => (req: { prompt: string }) =>
+      req.prompt.includes('"position"') ? JSON.stringify({ position: `${who}의 앱 아이디어`, agree: true, message: `${who}: 습관 기록 앱 어떠세요?` }) : "{}";
+    app = await makeTestApp({ claude: reply("클로드"), codex: reply("코덱스") });
+    const { user } = await seedUserAndAgents(app);
+    await app.orchestrator.handleMessage(msg("아무도 아이디어 없어?"));
+    const text = app.out.allText();
+    expect(text).toContain("클로드: 습관 기록 앱 어떠세요?");
+    expect(text).toContain("코덱스: 습관 기록 앱 어떠세요?");
+    expect(text).not.toContain("아이디어 후보 목록에 저장");
+    expect(await app.ctx.repos.ideas.list(null)).toHaveLength(0);
+    // A real idea statement is still filed.
+    await app.orchestrator.handleMessage(msg("나중에 다크모드 있으면 좋겠다"));
+    expect((await app.ctx.repos.ideas.list(null)).map((i) => i.text)).toEqual(["나중에 다크모드 있으면 좋겠다"]);
+    void user;
+  });
+
   it("proposes a new project via discussion and creates repo + topic only after approval", async () => {
     const h = codingHandler();
     app = await makeTestApp({

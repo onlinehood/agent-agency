@@ -256,6 +256,8 @@ export class Orchestrator {
           if (!(e instanceof AppError && e.code === "project_not_active")) throw e;
         });
         return;
+      case "discussion":
+        return this.teamDiscussion(user, project, c.cleanedText, c.mentionedAgentIds);
       case "question":
       case "unknown":
       default:
@@ -377,7 +379,7 @@ export class Orchestrator {
     const lounge = await this.loungeProject(user);
     const task = await this.internalTask(lounge, `질문: ${text.slice(0, 60)}`, "question");
     if (!speaker) {
-      return this.moderatorSays(user, project, "지금 응답할 수 있는 AI 실행기가 없어요. 웹 설정 화면의 연결 진단에서 실행기 상태를 확인해 주세요.", "answer.unavailable", "error");
+      return this.moderatorSays(user, project, "지금 응답할 수 있는 AI 실행기가 없어요. 서버에서 aa config → AI 구독(또는 aa doctor)으로 실행기 상태를 확인해 주세요.", "answer.unavailable", "error");
     }
     const ctxProject = project && project.workType !== "lounge" ? project : null;
     const context = ctxProject ? (await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text : await this.loungeContext(user);
@@ -394,6 +396,18 @@ export class Orchestrator {
     const out = await this.runner.run({ agent: speaker, task, project: ctxProject, purpose: "discuss", prompt, cwd, mode: "readonly", kinds: ["local_cli", "paid_api"], timeoutMs: 5 * 60_000 });
     if (out.status !== "succeeded") return this.moderatorSays(user, project, `답변을 준비하지 못했어요: ${out.error ?? out.status}`, "answer.failed", "error");
     await this.comm.say({ user, project, speaker: { kind: "agent", agent: out.agent }, listener: { kind: "user" }, situation: "report", body: out.text.slice(0, 3500), inCharacter: true, machineState: { kind: "answer", executionId: out.executionId } });
+  }
+
+  /** The user asks the team: the moderator convenes up to three agents and they each answer. */
+  private async teamDiscussion(user: User, project: Project | null, text: string, mentioned: string[]): Promise<void> {
+    const ctxProject = project && project.workType !== "lounge" ? project : null;
+    const agents = await this.ctx.team.convene(ctxProject, user.id, mentioned, 3);
+    if (agents.length < 2) return this.answer(user, project, text, mentioned);
+    const lounge = await this.loungeProject(user);
+    const task = await this.internalTask(lounge, `토론: ${text.slice(0, 50)}`, "discussion");
+    const context = ctxProject ? (await this.ctx.contextBuilder.build({ userId: user.id, agent: agents[0]!, project: ctxProject, budget: 4000, latestInstruction: text })).text : await this.loungeContext(user);
+    await this.ctx.repos.settings.set(project ? "project" : "user", project?.id ?? user.id, "discussion.last", { topic: text, context, agentIds: agents.map((a) => a.id), projectId: project?.id ?? null });
+    await this.discussion.run({ user, project, task, topic: text, context, agents, maxRounds: 2, cwd: this.ctx.config.dataDir });
   }
 
   private async loungeContext(user: User): Promise<string> {
@@ -468,7 +482,7 @@ export class Orchestrator {
 
   async proposeImport(user: User, repoRef: string, mentioned: string[]): Promise<Project | null> {
     if (!this.ctx.github) {
-      await this.moderatorSays(user, null, "GitHub가 연결되지 않아 저장소를 분석할 수 없어요. 웹 설정에서 GitHub를 연결해 주세요.", "import.unavailable", "error");
+      await this.moderatorSays(user, null, "GitHub가 연결되지 않아 저장소를 분석할 수 없어요. 서버에서 aa config → GitHub 로 연결해 주세요.", "import.unavailable", "error");
       return null;
     }
     // Read-only analysis — GET requests only, no clone writes, no code changes (PRD §5.2).
@@ -859,7 +873,7 @@ export class Orchestrator {
         if (!arg) {
           const p = await this.ctx.repos.users.getProfile(user.id);
           const options = allModes().map((m) => `${m} (${modeDef(m).emoji} ${modeDef(m).labelKo})`);
-          return say(`현재 모드: ${modeDef(p.mode).labelKo}\n변경: /mode <이름>\n${options.join("\n")}\n사용자 정의 세계관은 웹 설정에서 만들 수 있습니다.`);
+          return say(`현재 모드: ${modeDef(p.mode).labelKo}\n변경: /mode <이름>\n${options.join("\n")}\n사용자 정의 세계관은 서버의 aa config → 사용자 정의 세계관에서 만들 수 있습니다.`);
         }
         if (!isOrganizationMode(arg)) return say(`알 수 없는 모드입니다. 사용 가능: ${allModes().join(", ")}`);
         await this.setMode(user, arg);

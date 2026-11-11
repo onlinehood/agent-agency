@@ -42,6 +42,10 @@ const IMPORT = /(가져와|가져오|불러와|불러오|연결해|import|연동
 const IDEA = /(아이디어|나중에|언젠가|하면 어떨까|하면 좋겠|어떨까요|있으면 좋|idea|maybe later|someday|nice to have)/i;
 const TASK_VERB = /(추가|구현|만들|고쳐|수정|개선|변경|바꿔|삭제|제거|리팩터|작성|테스트|배포|업데이트|연동|적용|해줘|해 줘|해주세요|부탁|fix|add|implement|create|build|refactor|update|remove|write|change|migrate)/i;
 const QUESTION = /(\?|？|뭐야|뭔가요|인가요|나요|까요|어떻게|왜|언제|무엇|what|why|how|when|which)/i;
+/** Asking the team for opinions or ideas ("아무도 아이디어 없어?", "다들 어떻게 생각해?", "앱 아이디어 추천해줘"). */
+const ASKS_TEAM = /(다들|모두|아무도|누구|여러분|팀원|의견|생각은|생각해|아이디어|추천|브레인스토밍|면 어떨까|면 어때|anyone|everyone|ideas|opinion|thoughts|suggest)/i;
+const ASK_VERB = /(줘|줄래|내봐|내 봐|해봐|해 봐|말해|알려)/;
+const BUILD_VERB = /(구현|만들어|고쳐|수정해|추가해|삭제|제거|배포|리팩터|작성해|fix|implement|build|refactor|deploy)/i;
 
 export function classify(text: string, agents: Agent[], opts: { inProjectTopic: boolean }): Classified {
   const { ids, cleaned } = extractMentions(text, agents);
@@ -63,7 +67,13 @@ export function classify(text: string, agents: Agent[], opts: { inProjectTopic: 
   const isTask = TASK_VERB.test(t);
   const isQuestion = QUESTION.test(t) && !/(해줘|해 줘|해주세요|부탁)/.test(t);
 
-  if (isIdea && !/(해줘|해 줘|해주세요|지금|바로|당장)/.test(t)) return { classification: "idea", mentionedAgentIds: ids, cleanedText: t, confidence: 0.7 };
+  // A question or request to the team for opinions/ideas → the moderator convenes agents to
+  // discuss. One @mention means the user is asking that agent: a plain question.
+  if (ASKS_TEAM.test(t) && (QUESTION.test(t) || ASK_VERB.test(t)) && !BUILD_VERB.test(t) && ids.length !== 1) {
+    return { classification: "discussion", mentionedAgentIds: ids, cleanedText: t, confidence: 0.75 };
+  }
+  // Ideas are statements ("나중에 다크모드 있으면 좋겠다"); a question is answered, not filed.
+  if (isIdea && !isQuestion && !/(해줘|해 줘|해주세요|지금|바로|당장)/.test(t)) return { classification: "idea", mentionedAgentIds: ids, cleanedText: t, confidence: 0.7 };
   if (isQuestion && !isTask) return { classification: "question", mentionedAgentIds: ids, cleanedText: t, confidence: 0.7 };
   if (isTask) return { classification: opts.inProjectTopic ? "task_request" : "task_request", mentionedAgentIds: ids, cleanedText: t, confidence: isQuestion ? 0.5 : 0.8 };
   if (isQuestion) return { classification: "question", mentionedAgentIds: ids, cleanedText: t, confidence: 0.6 };
