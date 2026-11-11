@@ -309,6 +309,7 @@ export class Orchestrator {
     const style = await this.comm.styleFor(user, speaker, { kind: "user" }, "report");
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 사용자의 마지막 메시지를 직전 대화와 함께 이해해 의도를 정하고, JSON 하나만 출력하세요.",
+      NO_TOOLS_NOTE,
       "의도:",
       '- "answer": 질문, 잡담, 진행 상황 문의, 의견 요청 → reply에 답변. 모르면 모른다고 하고, 하지 않은 일을 했다고 말하지 마세요.',
       '- "task": 지금 무언가를 만들거나 고치거나 조사하라는 지시. 직전에 AI가 제안한 내용에 "알아서 해", "그렇게 해줘", "좋아 진행해"라고 답한 경우도 포함 → task에 실행할 작업을 구체적으로 정리(직전 대화에서 정해진 내용 포함), title에 짧은 제목, project에 대상 프로젝트 이름(맥락의 프로젝트 중), reply에 한 줄 확인.',
@@ -329,6 +330,11 @@ export class Orchestrator {
     const say = async (body: string, kind: string) => {
       await this.comm.say({ user, project, speaker: { kind: "agent", agent: out.agent }, listener: { kind: "user" }, situation: "report", body: body.slice(0, 3500), inCharacter: true, machineState: { kind, executionId: out.executionId } });
     };
+    // A build request must become a task (the team implements it with write access in a
+    // workspace). If the AI tried to do it here and reported missing tools, or gave no decision,
+    // let the rules file it as a task instead of posting that report.
+    const buildRequest = c.classification === "task_request";
+    if (buildRequest && (!j || (j.intent === "answer" && looksLikeToolRefusal(String(j.reply ?? ""))))) return false;
     if (!j) {
       // Plain text back: it answered.
       await say(out.text, "answer");
@@ -490,6 +496,7 @@ export class Orchestrator {
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 아래 맥락을 참고해 질문에 답하세요. 모르면 모른다고 답하고, 실행하지 않은 일을 했다고 말하지 마세요.",
       "명확한 개발 지시가 아니라면 작업을 시작하지 마세요. 필요한 경우 어떤 지시를 주면 되는지 안내하세요.",
+      NO_TOOLS_NOTE,
       `\n${context}`,
       `\n${style}`,
       `\n질문: ${text}`,
@@ -1375,4 +1382,12 @@ export function needsUnderstanding(c: Classified, project: Project | null, text:
     default:
       return true; // question, idea, unknown
   }
+}
+
+/** Conversations run read-only; tell the AI so it hands work over instead of attempting it. */
+const NO_TOOLS_NOTE = "이 대화에서는 파일을 만들거나 고치거나 명령을 실행할 수 없고, 그럴 필요도 없습니다. 도구를 쓰지 말고 바로 답하세요. 구현·수정 요청은 팀이 별도 작업 공간에서 쓰기 권한으로 진행하니, 권한이 없다는 말은 하지 마세요.";
+
+/** "Write/Edit 권한이 없어 진행하지 못했습니다" — the AI attempted work it cannot do in a conversation. */
+export function looksLikeToolRefusal(text: string): boolean {
+  return /(Write|Edit|Bash|쓰기|편집|도구|권한|permission)[^\n]{0,40}(없|못|막|거부|허용되지|denied|not allowed)/i.test(text);
 }

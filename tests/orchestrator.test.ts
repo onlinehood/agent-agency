@@ -115,6 +115,20 @@ describe("orchestrator", () => {
     void user;
   });
 
+  it("a build request in the lounge becomes a task even when the AI tries to do it and reports missing write tools", async () => {
+    app = await makeTestApp({
+      claude: (req) => (req.prompt.includes("사용자 메시지:") ? "Write/Edit와 Bash 도구 권한이 없어 진행하지 못했습니다. 권한을 열고 다시 지시해 주세요." : "{}"),
+      codex: () => "{}",
+    });
+    const { user } = await seedUserAndAgents(app);
+    const p = await app.ctx.repos.projects.create({ ownerId: user.id, name: "simple-calc", slug: "simple-calc", description: "계산기", stack: [], status: "active", repoMode: "new", workType: "coding" });
+    await app.orchestrator.handleMessage(msg("simple-calc 구현 진행해"));
+    expect(app.out.allText()).not.toContain("권한이 없어");
+    expect(app.claude.calls.find((r) => r.prompt.includes("사용자 메시지:"))!.prompt).toContain("권한이 없다는 말은 하지 마세요");
+    const tasks = await app.ctx.repos.tasks.listByProject(p.id);
+    expect(tasks.map((t) => t.title)).toEqual(["simple-calc 첫 구현"]);
+  });
+
   it("without a usable AI decision, a short lounge follow-up still reaches the only project with the last answer attached", async () => {
     app = await makeTestApp({ claude: (req) => (req.prompt.includes("질문: 작업 언제해?") ? "기본값: 0으로 나누면 Error." : "{}"), codex: () => "{}" });
     const { user } = await seedUserAndAgents(app);

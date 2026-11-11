@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import { serve } from "@hono/node-server";
 import { loadConfig, loadDotEnv, ensureDataDirs } from "./config/index.js";
 import { createApp } from "./app.js";
@@ -9,6 +12,7 @@ import { openAndMigrate, openDatabase, checkSchemaCompatibility, migrate, latest
 import { Repos } from "./db/repositories.js";
 import { runDiagnostics, diagnosticsMarkdown } from "./ops/diagnostics.js";
 import { verifyExecutor } from "./executors/verify.js";
+import { diagnoseLogin, geminiHome, killStrayGemini, pinOAuth } from "./executors/geminiLogin.js";
 import { runBackup } from "./backup/service.js";
 import { restoreFromFile, createLocalBackup } from "./backup/backup.js";
 import { logger } from "./util/logger.js";
@@ -34,6 +38,7 @@ const USAGE = `AgentAgency — Your Agents. Your Agency.
   restore <file>        백업 복원 (복원 전 현재 상태를 자동 백업)
   upgrade-check         업데이트 전 호환성 검사 + 사전 백업
   setup-token           (선택) 웹 초기 설정용 1회용 토큰 재발급
+  gemini-login          Gemini CLI Google 로그인 (남은 프로세스 정리 · 실패 이유 표시)
   art                   마스코트 출력
 `;
 
@@ -154,6 +159,32 @@ async function main(): Promise<void> {
       }
       await db.close();
       process.exitCode = compat.ok && !running.length ? 0 : 2;
+      return;
+    }
+    case "gemini-login": {
+      // Login with Google for Gemini CLI, made reliable on a headless server (see geminiLogin.ts).
+      const home = geminiHome();
+      const log = path.join(config.dataDir, "gemini-login.log");
+      const killed = killStrayGemini();
+      if (killed.length) console.log(c.dim(`  남아 있던 Gemini ${killed.length}개를 닫았어요.`));
+      pinOAuth(home);
+      fs.rmSync(log, { force: true });
+      console.log(c.dim("  주소가 나오면 브라우저에서 열어 로그인하고, 받은 코드를 붙여 넣은 뒤 Enter를 한 번 누르세요. 입력창(>)이 나오면 /quit 로 나오세요.\n"));
+      const code = await new Promise<number>((resolve) => {
+        const child = spawn(config.GEMINI_CLI_PATH, [], { stdio: "inherit", env: { ...process.env, NO_BROWSER: "true", GEMINI_DEBUG_LOG_FILE: log } });
+        child.on("error", () => resolve(127));
+        child.on("exit", (n) => resolve(n ?? 1));
+      });
+      const d = diagnoseLogin(home, log);
+      pinOAuth(home); // never leave the paid API-key method selected
+      if (code === 127) console.log(`${c.red("✗")} Gemini CLI를 실행하지 못했어요 (${config.GEMINI_CLI_PATH}). aa update 후 다시 해 보세요.`);
+      else if (d.ok) console.log(`${c.green("✓")} Gemini 로그인 정보가 저장됐어요. 이제 aa verify gemini-cli 로 확인하세요.`);
+      else {
+        console.log(`${c.red("✗")} Gemini 로그인 정보가 저장되지 않았어요.`);
+        if (d.reason) console.log(c.dim(`  Gemini가 남긴 이유:\n${d.reason.replace(/^/gm, "    ")}`));
+        console.log(`  ${d.hint}`);
+      }
+      process.exitCode = d.ok ? 0 : 1;
       return;
     }
     case "setup-token": {

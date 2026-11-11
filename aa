@@ -160,7 +160,7 @@ case "${1:-}" in
     case "${2:-}" in
       claude) app -it app claude auth login --claudeai ;;
       codex) app -it app codex login --device-auth ;;
-      gemini) app -it -e NO_BROWSER=true app gemini ;;
+      gemini) app -it app agent-agency gemini-login ;;
       *) echo "사용법: aa login claude|codex|gemini" >&2; exit 2 ;;
     esac
     tui_note "로그인했으면 aa verify ${2}-cli 로 검증하세요 (aa config → AI 구독 에서도 됩니다)."
