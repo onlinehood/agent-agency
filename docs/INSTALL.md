@@ -145,6 +145,7 @@ Claude Code처럼 한 단계씩 진행됩니다. 질문에는 ↑↓(또는 숫�
 | `aa backup` | 지금 백업 |
 | `aa update` | 최신 버전으로 업데이트 |
 | `aa restart` / `aa stop` | 재시작 / 중지 |
+| `aa cursor` | Cursor Agent CLI 설치 (기본 이미지에는 없음) |
 | `aa web` | (선택) 웹 대시보드 접속 방법 |
 
 ---
@@ -451,7 +452,21 @@ docker compose exec -it app codex login --device-auth
 docker compose exec -it -e NO_BROWSER=true app gemini
 ```
 
-"Login with Google"을 고르고 안내대로 로그인한 뒤 `/quit`로 나옵니다. 설정에서 Gemini를 고르면 기능 플래그 `executors.gemini`도 자동으로 켜집니다.
+"Login with Google"을 고르고, 화면의 주소를 브라우저에서 열어 로그인한 뒤 받은 코드를 붙여 넣고 `/quit`로 나옵니다. 설정에서 Gemini를 고르면 기능 플래그 `executors.gemini`도 자동으로 켜집니다.
+
+**Cursor (선택, Cursor 구독)**
+
+Cursor Agent CLI는 기본 이미지에 들어 있지 않습니다. 먼저 서버에서 설치합니다(이미지를 다시 빌드하므로 몇 분 걸립니다).
+
+```bash
+aa cursor
+```
+
+`.env`에 `INSTALL_CURSOR_CLI=true`가 들어가서 `aa update` 뒤에도 유지됩니다. 설치가 끝나면 `aa config` → AI 구독에서 Cursor를 골라 로그인합니다(`cursor-agent login`, 기능 플래그 `executors.cursor`도 자동으로 켜짐).
+
+**나중에 추가하기**
+
+처음 설정에서 고르지 않은 AI도 언제든 `aa config` → **AI 구독**에서 Space로 고르고 Enter를 누르면 로그인과 검증을 이어서 합니다. 그다음 `aa config` → **에이전트** → 에이전트 추가에서 그 실행기로 에이전트를 만들면 팀에 합류합니다.
 
 **검증**
 

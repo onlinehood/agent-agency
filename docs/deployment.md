@@ -36,26 +36,18 @@ docker compose up -d --build
 docker compose exec -it app agent-agency setup   # 대화형 설정 (aa setup 과 같음)
 ```
 
-### 추가 실행기 로그인 (선택)
+### 추가 실행기 (선택)
+
+Gemini CLI는 이미지에 들어 있습니다. Cursor Agent CLI는 `aa cursor`로 설치합니다(`.env`의 `INSTALL_CURSOR_CLI=true`로 이미지를 다시 빌드하며, `aa update` 뒤에도 유지).
 
 ```bash
-docker compose exec -it app gemini            # 처음 실행 시 "Login with Google" 선택
+aa cursor
 ```
 
-Cursor CLI가 필요하면 아래처럼 이미지를 다시 빌드합니다. 그다음 로그인합니다.
+로그인과 검증은 `aa config` → AI 구독에서 고르면 한 번에 합니다. 기능 플래그(`executors.gemini`, `executors.cursor`)도 자동으로 켜집니다. 직접 검증하려면:
 
 ```bash
-docker compose build --build-arg INSTALL_CURSOR_CLI=true app
-```
-
-```bash
-docker compose exec -it app cursor-agent login
-```
-
-로그인한 뒤 `aa config` → 기능 플래그에서 `executors.gemini` 또는 `executors.cursor`를 켭니다(설정의 AI 구독 단계에서 고르면 자동으로 켜집니다). 그리고 검증을 실행합니다.
-
-```bash
-docker compose exec app node dist/cli.js verify-executor gemini-cli
+aa verify gemini-cli
 ```
 
 ### 프로젝트별 격리 컨테이너 (권장)

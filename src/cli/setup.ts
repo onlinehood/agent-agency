@@ -39,6 +39,9 @@ const LOGINS: LoginSpec[] = [
   { id: "cursor-cli", name: "Cursor", provider: "cursor", agentName: "커서", flag: "executors.cursor", guide: "Cursor 구독 계정으로 로그인합니다.", command: (cfg) => ({ cmd: cfg.CURSOR_CLI_PATH, args: ["login"] }) },
 ];
 
+/** Which account each CLI logs in with (shown when picking). */
+const ACCOUNT: Record<string, string> = { "claude-cli": "Claude Pro/Max", "codex-cli": "ChatGPT Plus/Pro", "gemini-cli": "Google 계정", "cursor-cli": "Cursor 구독" };
+
 export interface CliDeps {
   prompt: Prompter;
   out: (line: string) => void;
@@ -274,7 +277,7 @@ export class SetupCli {
     const s = this.ctx.executors.getStatus(id);
     const verified = !!this.ctx.executors.getVerification(id);
     const usable = this.ctx.executors.usabilityReason(id);
-    if (!s?.installed) return { label: "설치 안 됨", tone: "info", installed: false, loggedIn: false, verified };
+    if (!s?.installed) return { label: id === "cursor-cli" ? "설치 안 됨 — 서버에서 aa cursor 로 설치" : "설치 안 됨", tone: "info", installed: false, loggedIn: false, verified };
     if (!s.authenticated || !s.subscriptionAuth) return { label: s.authenticated ? "API 키 로그인 — 구독 로그인 필요" : "로그인 필요", tone: "warn", installed: true, loggedIn: false, verified };
     if (!usable.usable) return { label: usable.reason, tone: "warn", installed: true, loggedIn: true, verified };
     return { label: verified ? "사용 가능 · 검증됨" : "로그인됨", tone: "ok", installed: true, loggedIn: true, verified };
@@ -294,8 +297,8 @@ export class SetupCli {
       return;
     }
     const picked = await this.p.multiselect<string>({
-      message: "로그인할 AI 구독 (가진 것만 고르세요)",
-      options: installed.map((l) => ({ value: l.id, label: l.name, hint: this.statusOf(l.id).label })),
+      message: "로그인할 AI 구독 (Space로 여러 개 · 가진 것만)",
+      options: installed.map((l) => ({ value: l.id, label: l.name, hint: `${ACCOUNT[l.id] ?? ""} · ${this.statusOf(l.id).label}` })),
       initial: installed.filter((l) => l.id === "claude-cli" || l.id === "codex-cli" || this.statusOf(l.id).loggedIn).map((l) => l.id),
     });
     for (const id of picked) await this.loginAndVerify(LOGINS.find((l) => l.id === id)!);

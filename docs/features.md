@@ -115,7 +115,7 @@ API 환산 비용은 "(추정, 구독 실제 과금 아님)"으로 표시합니�
 
 - `aa setup`/`aa config` → AI 구독에서 고르면 로그인과 기능 플래그를 함께 처리합니다. 실제 실행 검증 기록이 생기기 전에는 자동으로 선택하지 않습니다.
 - Gemini의 `-r`은 세션 ID가 아니라 순번이나 `latest`로만 재개하므로 재개는 "미지원"으로 표시합니다.
-- Gemini CLI는 이미지에 기본 설치됩니다. Cursor CLI는 빌드 인자 `INSTALL_CURSOR_CLI=true`일 때만 공식 설치 스크립트로 설치합니다. 로그인 정보는 볼륨에 보관합니다.
+- Gemini CLI는 이미지에 기본 설치됩니다. Cursor CLI는 `aa cursor`로 공식 설치 스크립트를 써서 이미지에 추가합니다(`.env`의 `INSTALL_CURSOR_CLI=true`, `aa update` 뒤에도 유지). 로그인 정보는 볼륨에 보관합니다.
 
 ## 13. B 협업 스타일 (선택형 실험)
 
