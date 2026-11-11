@@ -169,9 +169,19 @@ tui_run() {
   else
     "$@" >>"$TUI_LOG" 2>&1 &
     pid=$!
+    # Keep the spinner on one row: a wrapped line cannot be redrawn with \r and would pile up
+    # a copy per frame on narrow (phone) terminals. Budget: frame + space + label + " (9999s)".
+    local cols short n
+    cols=$(tput cols 2>/dev/null || echo 80)
+    short=$label
+    n=$(printf '%s' "$label" | LC_ALL=C.UTF-8 wc -m)
+    while [ "$(tui_w "$short")" -gt $((cols - 12)) ] && [ "$n" -gt 1 ]; do
+      n=$((n - 1))
+      short="$(printf '%s' "$label" | LC_ALL=C.UTF-8 sed -E "s/^(.{$n}).*/\1/")"
+    done
     printf '\e[?25l'
     while kill -0 "$pid" 2>/dev/null; do
-      printf '\r\e[2K%s%s %s…%s %s(%ds)%s' "$C_ACC" "${f[$((i % 10))]}" "$label" "$C_0" "$C_DIM" $((SECONDS - start)) "$C_0"
+      printf '\r\e[2K%s%s %s…%s %s(%ds)%s' "$C_ACC" "${f[$((i % 10))]}" "$short" "$C_0" "$C_DIM" $((SECONDS - start)) "$C_0"
       i=$((i + 1)); sleep 0.12
     done
     wait "$pid" || rc=$?

@@ -3,7 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import { makeTestApp, ADMIN_TG, type TestApp } from "./helpers.js";
 import { SetupCli, type CliDeps } from "../src/cli/setup.js";
 import { ScriptedPrompter, TtyPrompter, BackSignal, BACK } from "../src/cli/prompt.js";
-import { width, box, party, stripAnsi } from "../src/cli/term.js";
+import { width, box, party, stripAnsi, spinner } from "../src/cli/term.js";
 import { avatar, composeAvatar, renderGrid, defaultLook, MASCOT, SHAPES, COLORS, ACCESSORIES, type Look, type Mood } from "../src/cli/sprites.js";
 import type { SetupNet } from "../src/setup/service.js";
 import type { ControlActions } from "../src/ops/control.js";
@@ -272,6 +272,18 @@ describe("terminal prompts and rendering", () => {
     }, 5);
     expect(await r).toEqual([1, 2]);
     expect(t.out()).toContain("1개 이상 선택하세요");
+  });
+
+  it("spinner never wraps, so narrow (phone) terminals do not pile up copies", () => {
+    for (const columns of [30, 40, 80]) {
+      const frames: string[] = [];
+      const stream = { isTTY: true, columns, write: (s: string) => (frames.push(s), true) } as unknown as NodeJS.WriteStream;
+      const sp = spinner("Claude 검증 중 (짧은 읽기 전용 요청)", stream);
+      sp.stop();
+      const drawn = frames.filter((f) => f.startsWith("\r\x1b[2K") && stripAnsi(f).trim().length > 0);
+      expect(drawn.length).toBeGreaterThan(0);
+      for (const f of drawn) expect(width(stripAnsi(f).replace("\r", "")), `cols ${columns}`).toBeLessThan(columns);
+    }
   });
 
   it("measures Korean as double width and draws aligned boxes and dot art", () => {

@@ -164,7 +164,14 @@ export function spinner(label: string, stream: NodeJS.WriteStream = process.stdo
   const started = Date.now();
   const draw = () => {
     const secs = Math.floor((Date.now() - started) / 1000);
-    stream.write(`\r\x1b[2K${c.accent(FRAMES[i++ % FRAMES.length]!)} ${c.accent(`${label}…`)} ${c.dim(`(${secs}s · Ctrl+C 중단)`)}`);
+    // The line must never wrap: "\r" only returns to the start of the last wrapped row, so a
+    // wrapped spinner leaves a copy of itself on every frame (narrow phone terminals).
+    const max = Math.max(10, (stream.columns || 80) - 1);
+    let head = `${FRAMES[i++ % FRAMES.length]!} ${label}…`;
+    let tail = ` (${secs}s · Ctrl+C 중단)`;
+    if (width(head + tail) > max) tail = ` ${secs}s`;
+    if (width(head + tail) > max) head = truncate(head, Math.max(4, max - width(tail)));
+    stream.write(`\r\x1b[2K${c.accent(head)}${c.dim(tail)}`);
   };
   stream.write("\x1b[?25l");
   draw();
