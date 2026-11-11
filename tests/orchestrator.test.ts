@@ -60,6 +60,58 @@ describe("orchestrator", () => {
     expect(app.github.calls.filter((c) => c.startsWith("createPrivateRepo"))).toHaveLength(1);
   });
 
+  it("a proposal that lists the same agent twice still activates, and a short follow-up in the lounge becomes the project's first task", async () => {
+    const ids: Record<string, string> = {};
+    const h = codingHandler();
+    app = await makeTestApp({
+      claude: (req) => {
+        if (req.prompt.includes('다음 JSON만 출력: {"name"')) return JSON.stringify({ name: "simple-calc", slug: "simple-calc", description: "순수 HTML/CSS/JS 계산기", stack: ["HTML", "CSS", "JavaScript"], team: [{ agentId: ids.claude, role: "leader" }, { agentId: ids.codex, role: "implementer" }, { agentId: ids.claude, role: "reviewer" }] });
+        if (req.prompt.includes("질문: 작업 언제해?")) return "지시만 주시면 바로 시작할게요. 정하지 않은 건 기본값(세 파일, 0으로 나누면 Error)으로 진행합니다.";
+        return h(req);
+      },
+      codex: h,
+    });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    ids.claude = claude.id;
+    ids.codex = codex.id;
+    await app.orchestrator.handleMessage(msg("새 프로젝트 만들어줘 계산기"));
+    const approval = (await app.ctx.repos.approvals.listPending(user.id)).find((a) => a.action === "create_project")!;
+    await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `a:ok:${approval.id}:${approval.nonce}`, chatId: "-100123", messageId: 5 });
+    const [project] = (await app.ctx.repos.projects.listByOwner(user.id)).filter((p) => p.workType !== "lounge");
+    expect(project!.status).toBe("active");
+    expect((await app.ctx.repos.projects.listAgents(project!.id)).map((m) => m.functionalRole).sort()).toEqual(["implementer", "leader"]);
+    expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `p:kick:${project!.id}`))).toBe(true);
+
+    // "작업 언제해?" is answered; "알아서 만들어봐" right after goes to the only project, with that answer attached.
+    await app.orchestrator.handleMessage(msg("작업 언제해?"));
+    await app.orchestrator.handleMessage(msg("알아서 만들어봐"));
+    expect(app.out.allText()).not.toContain("아직 프로젝트가 없어요");
+    const [task] = await app.ctx.repos.tasks.listByProject(project!.id);
+    expect(task!.title).toBe("simple-calc 첫 구현");
+    expect(task!.description).toContain("순수 HTML/CSS/JS 계산기");
+    expect(task!.description).toContain("[직전 대화");
+    expect(task!.description).toContain("0으로 나누면 Error");
+    // The kickoff button does nothing once a task exists.
+    expect((await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `p:kick:${project!.id}`, chatId: "-100123", messageId: 9 })).toast).toContain("이미 작업");
+  });
+
+  it("an approved project whose activation never finished is completed on startup", async () => {
+    app = await makeTestApp({ claude: codingHandler(), codex: codingHandler() });
+    const { user, claude } = await seedUserAndAgents(app);
+    const p = await app.ctx.repos.projects.create({ ownerId: user.id, name: "멈춘 프로젝트", slug: "stuck", description: "계산기", stack: [], status: "proposed", repoMode: "new", workType: "coding" });
+    const a = await app.ctx.approvals.request({ actorId: user.id, projectId: p.id, action: "create_project", summary: "s", scope: { team: [{ agentId: claude.id, role: "leader" }] } });
+    await app.ctx.repos.approvals.setStatus(a.id, "approved", user.id);
+    // Before recovery the lounge says what state the project is in, not "no project".
+    await app.orchestrator.handleMessage(msg("알아서 만들어봐"));
+    expect(app.out.allText()).toContain("멈춘 프로젝트: ");
+    expect(app.out.allText()).not.toContain("아직 프로젝트가 없어요");
+    expect(await app.orchestrator.resumeActivationsOnStart()).toEqual([p.id]);
+    const after = await app.ctx.repos.projects.get(p.id);
+    expect(after.status).toBe("active");
+    expect(after.topicId).not.toBeNull();
+    expect(await app.orchestrator.resumeActivationsOnStart()).toEqual([]);
+  });
+
   it("imports an existing repository read-only and links it only after approval", async () => {
     app = await makeTestApp({ claude: codingHandler(), codex: codingHandler() });
     const { user } = await seedUserAndAgents(app);

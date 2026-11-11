@@ -666,6 +666,10 @@ export class ApprovalRepo {
     return (await this.db.query("SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at", [taskId])).map((r) => this.map(r));
   }
 
+  async listByProject(projectId: string): Promise<Approval[]> {
+    return (await this.db.query("SELECT * FROM approvals WHERE project_id=$1 ORDER BY created_at", [projectId])).map((r) => this.map(r));
+  }
+
   async setStatus(id: string, status: ApprovalStatus, decidedBy: string | null): Promise<Approval> {
     await this.db.query("UPDATE approvals SET status=$1, decided_by=$2, decided_at=now(), reconfirm_pending=false WHERE id=$3", [status, decidedBy, id]);
     return this.get(id);
