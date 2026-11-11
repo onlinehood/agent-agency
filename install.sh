@@ -216,8 +216,10 @@ need_sudo() {
   tui_note "관리자 권한이 필요해요. sudo 비밀번호를 입력하세요."
   sudo -v </dev/tty
 }
-trap 'printf "\e[?25h"; [ "${TUI_FAILED:-0}" = 1 ] || rm -f "$TUI_LOG"' EXIT
-trap 'printf "\e[?25h\n%s중단했어요. 다시 실행하면 이어서 합니다.%s\n" "$C_DIM" "$C_0"; exit 130' INT
+# Restore the cursor only on a terminal (no stray escape codes in logs or pipes).
+tui_cursor_on() { [ -t 1 ] && printf '\e[?25h'; return 0; }
+trap 'tui_cursor_on; [ "${TUI_FAILED:-0}" = 1 ] || rm -f "$TUI_LOG"' EXIT
+trap 'tui_cursor_on; printf "\n%s중단했어요. 다시 실행하면 이어서 합니다.%s\n" "$C_DIM" "$C_0"; exit 130' INT
 
 # A checkout next to this script is used as is (the usual `git clone … && ./install.sh`).
 HERE="$(dirname "$SELF")"
