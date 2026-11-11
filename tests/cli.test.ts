@@ -3,8 +3,8 @@ import { PassThrough, Writable } from "node:stream";
 import { makeTestApp, ADMIN_TG, type TestApp } from "./helpers.js";
 import { SetupCli, type CliDeps } from "../src/cli/setup.js";
 import { ScriptedPrompter, TtyPrompter, BackSignal, BACK } from "../src/cli/prompt.js";
-import { width, box, party, stripAnsi } from "../src/cli/term.js";
-import { avatar, composeAvatar, renderGrid, defaultLook, MASCOT, SHAPES, COLORS, ACCESSORIES, type Look, type Mood } from "../src/cli/sprites.js";
+import { width, box, stripAnsi, spinner } from "../src/cli/term.js";
+import { mascot, renderPixels } from "../src/cli/sprites.js";
 import type { SetupNet } from "../src/setup/service.js";
 import type { ControlActions } from "../src/ops/control.js";
 import { httpControlClient, ensureControlToken, CONTROL_HEADER } from "../src/ops/control.js";
@@ -88,13 +88,8 @@ describe("terminal setup (agent-agency setup)", () => {
         ["claude-cli", "codex-cli"],
         "클로드",
         "careful",
-        "edit", // customise Claude's look: colour → mint
-        "color",
-        "mint",
-        "done",
         "코덱스",
         "bold",
-        "keep",
         true, // smoke test
       ],
       { loginSets: () => (claudeLoggedIn = true) },
@@ -115,9 +110,6 @@ describe("terminal setup (agent-agency setup)", () => {
     const agents = await ctx.repos.agents.listByOwner(user.id);
     expect(agents.map((a) => a.name)).toEqual(["클로드", "코덱스"]);
     expect((await ctx.repos.users.getProfile(user.id)).moderatorAgentId).toBe(agents[0]!.id);
-    expect(await h.cli.svc.lookOf(agents[0]!)).toEqual({ ...defaultLook("claude-cli"), color: "mint" });
-    expect(await h.cli.svc.lookOf(agents[1]!)).toEqual(defaultLook("codex-cli"));
-    expect((await h.cli.svc.party()).map((m) => m.note)).toEqual(["진행자 · 쉬는 중", "쉬는 중"]);
     expect(await ctx.repos.settings.get("system", "", "setup.completed")).toBe(true);
     expect(h.netCalls).toContain("send:-1001"); // smoke test message to the lounge
     expect(h.control).toContainEqual({ telegram: "restart" });
@@ -172,7 +164,7 @@ describe("terminal settings (agent-agency config)", () => {
     app = await makeTestApp();
     const h = harness(app, [
       "custom", "__add", "startup", "스타트업", "🚀", "corporate", "대표", "PM", "메이커", "다들", "빠르게 실험하는 팀", "casual", "",
-      "agents", "__add", "리뷰어", "codex-cli", "analytical", "keep",
+      "agents", "__add", "리뷰어", "codex-cli", "analytical",
       "web", "long-enough-password", "long-enough-password",
       "exit",
     ]);
@@ -274,6 +266,18 @@ describe("terminal prompts and rendering", () => {
     expect(t.out()).toContain("1개 이상 선택하세요");
   });
 
+  it("spinner never wraps, so narrow (phone) terminals do not pile up copies", () => {
+    for (const columns of [30, 40, 80]) {
+      const frames: string[] = [];
+      const stream = { isTTY: true, columns, write: (s: string) => (frames.push(s), true) } as unknown as NodeJS.WriteStream;
+      const sp = spinner("Claude 검증 중 (짧은 읽기 전용 요청)", stream);
+      sp.stop();
+      const drawn = frames.filter((f) => f.startsWith("\r\x1b[2K") && stripAnsi(f).trim().length > 0);
+      expect(drawn.length).toBeGreaterThan(0);
+      for (const f of drawn) expect(width(stripAnsi(f).replace("\r", "")), `cols ${columns}`).toBeLessThan(columns);
+    }
+  });
+
   it("measures Korean as double width and draws aligned boxes and dot art", () => {
     expect(width("한글")).toBe(4);
     expect(width("\x1b[1mab\x1b[0m")).toBe(2);
@@ -281,52 +285,14 @@ describe("terminal prompts and rendering", () => {
     expect(new Set(lines.map((l) => width(l))).size).toBe(1);
   });
 
-  it("composes every shape, colour, accessory and mood into a small avatar", () => {
-    const moods: Mood[] = ["idle", "happy", "working", "waiting", "worried", "sleepy"];
-    for (const shape of Object.keys(SHAPES) as Look["shape"][])
-      for (const accessory of Object.keys(ACCESSORIES) as Look["accessory"][])
-        for (const mood of moods) {
-          const g = composeAvatar({ shape, color: "blue", accessory }, mood);
-          expect(g.length, `${shape}/${accessory}/${mood}`).toBeLessThanOrEqual(14); // ≤ 7 terminal lines
-          expect(Math.max(...g.map((r) => r.length))).toBeLessThanOrEqual(18);
-          expect(g.flat().some((p) => p?.[0] === "#1e1a2b"), `${shape}/${accessory}/${mood} has a face`).toBe(true);
-        }
-    for (const color of Object.keys(COLORS) as Look["color"][]) expect(avatar({ ...MASCOT, color }, "idle", "256").join("")).toMatch(/38;5;\d+/);
-    expect(avatar(MASCOT, "happy", "truecolor").join("")).toContain("38;2;");
-    expect(avatar(MASCOT, "happy", "256").join("")).not.toContain("38;2;");
-    expect(avatar(MASCOT, "happy", "none").join("")).not.toContain("\x1b");
-    // faces differ by mood
-    const face = (m: Mood) => JSON.stringify(composeAvatar(MASCOT, m));
-    expect(new Set(moods.map(face)).size).toBe(moods.length);
+  it("renders the mascot with two pixels per cell in truecolor, 256 colours or none", () => {
+    expect(mascot("truecolor")).toHaveLength(3);
+    expect(mascot("truecolor").join("")).toContain("38;2;");
+    expect(mascot("256").join("")).toMatch(/38;5;\d+/);
+    expect(mascot("256").join("")).not.toContain("38;2;");
+    expect(mascot("none").join("")).not.toContain("\x1b");
     // top and bottom pixels with different colours share one cell (fg + bg)
-    expect(renderGrid([[["#000000", 16]], [["#ffffff", 231]]], "256")[0]).toBe("\x1b[38;5;16;48;5;231m▀\x1b[0m");
-  });
-
-  it("shows what agents are doing as their faces", async () => {
-    app = await makeTestApp();
-    const h = harness(app, []);
-    const user = await app.ctx.repos.users.upsertByTelegram(ADMIN_TG, null, "admin");
-    const a = await h.cli.svc.addAgent(user, { name: "일꾼", preset: "careful", provider: "anthropic", adapterId: "claude-cli" });
-    expect((await h.cli.svc.party()).map((m) => m.mood)).toEqual(["idle"]);
-    const project = await app.ctx.repos.projects.create({ ownerId: user.id, name: "p", slug: "p", workType: "coding" });
-    const task = await app.ctx.repos.tasks.create({ projectId: project.id, title: "t", assignedAgentId: a.id } as never);
-    await app.ctx.repos.tasks.update(task.id, { state: "in_progress" });
-    expect((await h.cli.svc.party())[0]).toMatchObject({ mood: "working", note: "일하는 중" });
-    await app.ctx.repos.tasks.update(task.id, { state: "blocked" });
-    expect((await h.cli.svc.party())[0]!.mood).toBe("worried");
-  });
-
-  it("lays out a party side by side and wraps to the width", () => {
-    const members = [{ look: defaultLook("codex-cli"), name: "코덱스" }, { look: defaultLook("claude-cli"), name: "클로드" }, { look: defaultLook("gemini-cli"), name: "제미니" }];
-    const wide = party(members, 200).map(stripAnsi);
-    expect(wide.some((l) => l.includes("코덱스") && l.includes("클로드") && l.includes("제미니"))).toBe(true);
-    const narrow = party(members, 30).map(stripAnsi);
-    expect(narrow.some((l) => l.includes("코덱스") && l.includes("클로드"))).toBe(true);
-    expect(narrow.some((l) => l.includes("제미니") && !l.includes("코덱스"))).toBe(true);
-    for (const l of narrow) expect(width(l)).toBeLessThanOrEqual(30);
-    const one = party(members, 30, { oneRow: true }).map(stripAnsi).join("\n");
-    expect(one).toContain("클로드");
-    expect(one).not.toContain("제미니");
+    expect(renderPixels(["a", "b"], { a: ["#000000", 16], b: ["#ffffff", 231] }, "256")[0]).toBe("\x1b[38;5;16;48;5;231m▀\x1b[0m");
   });
 });
 

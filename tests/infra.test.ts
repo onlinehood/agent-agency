@@ -5,13 +5,14 @@ import { openAndMigrate } from "../src/db/index.js";
 import { Repos } from "../src/db/repositories.js";
 import { exportDatabase, encodeBackup, decodeBackup, importDatabase, createLocalBackup, listBackups } from "../src/backup/backup.js";
 import { signS3Put } from "../src/backup/s3.js";
-import { decide } from "../src/ops/resources.js";
+import { decide, availableMemBytes } from "../src/ops/resources.js";
+import { Scheduler } from "../src/core/scheduler/scheduler.js";
 import { renderHtml, splitText, keyboard } from "../src/telegram/format.js";
 import { classify } from "../src/core/orchestration/classifier.js";
 import { appJwt } from "../src/github/appAuth.js";
 import { generateKeyPairSync, createVerify } from "node:crypto";
 import { LocalFileStore } from "../src/storage/fileStore.js";
-import { tmpDir } from "./helpers.js";
+import { tmpDir, makeTestApp } from "./helpers.js";
 import type { Agent } from "../src/core/types.js";
 
 describe("job queue", () => {
@@ -79,6 +80,39 @@ describe("resources", () => {
     expect(decide({ ...base, totalMemBytes: 1 * 1024 ** 3 }, 2).allowedConcurrency).toBe(1); // e.g. 1GB micro VM
     expect(decide({ ...base, diskFreeBytes: 1024 ** 3 }, 2).acceptNewWork).toBe(false);
     expect(decide({ ...base, freeMemBytes: 100 * 1024 ** 2 }, 2).acceptNewWork).toBe(false);
+    // Informational limits (small RAM, high load) never block work or appear as blocking reasons.
+    const small = decide({ ...base, totalMemBytes: 1024 ** 3, load1: 9 }, 2);
+    expect(small.acceptNewWork).toBe(true);
+    expect(small.blocking).toEqual([]);
+    expect(decide({ ...base, freeMemBytes: 100 * 1024 ** 2 }, 2).blocking[0]).toMatch(/사용 가능한 메모리 100MB/);
+  });
+
+  it("reads MemAvailable (reclaimable cache counts as available), not MemFree", () => {
+    const meminfo = "MemTotal:        1000000 kB\nMemFree:           40000 kB\nMemAvailable:     600000 kB\nBuffers:            1000 kB\n";
+    expect(availableMemBytes(meminfo)).toBe(600000 * 1024);
+    // free swap counts half
+    expect(availableMemBytes(meminfo + "SwapTotal:       4000000 kB\nSwapFree:        4000000 kB\n")).toBe((600000 + 2000000) * 1024);
+  });
+
+  it("alerts about deferred work only when work is waiting, and not repeatedly", async () => {
+    const app = await makeTestApp();
+    try {
+      const low = () => ({ cpus: 1, load1: 4, totalMemBytes: 1024 ** 3, freeMemBytes: 100 * 1024 ** 2, diskFreeBytes: 50 * 1024 ** 3, diskTotalBytes: 100 * 1024 ** 3 });
+      const sched = new Scheduler(app.ctx, app.orchestrator, { resourceProbe: low });
+      const alerts: string[] = [];
+      app.ctx.events.on("alert", (a) => alerts.push(a.message));
+      await sched.tick();
+      await sched.tick();
+      expect(alerts).toEqual([]); // nothing queued: nothing to tell
+      await app.ctx.repos.jobs.enqueue("task.run", { projectId: "p1", taskId: "t1" });
+      for (let i = 0; i < 5; i++) await sched.tick();
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toMatch(/대기 중인 작업을 잠시 미룹니다: 사용 가능한 메모리 100MB/);
+      expect(alerts[0]).toMatch(/RAM이 작아요/);
+      expect(alerts[0]).not.toMatch(/load/);
+    } finally {
+      await app.stop();
+    }
   });
 });
 
@@ -101,6 +135,13 @@ describe("classifier", () => {
     expect(classify("@코덱스 로그인 버튼 추가해줘", agents, { inProjectTopic: true })).toMatchObject({ classification: "task_request", mentionedAgentIds: ["a2"] });
     expect(classify("나중에 다크모드 있으면 좋겠다", agents, { inProjectTopic: true }).classification).toBe("idea");
     expect(classify("지금 진행 상황이 어때?", agents, { inProjectTopic: true }).classification).toBe("question");
+    // Asking the team for ideas/opinions is a discussion, not an idea to file away.
+    for (const q of ["아무도 아이디어 없어?", "만들 앱 좋은 아이디어 없어?", "앱 아이디어 추천해줘", "다들 어떻게 생각해?", "다크모드 넣으면 어떨까?"]) {
+      expect(classify(q, agents, { inProjectTopic: false }).classification, q).toBe("discussion");
+    }
+    expect(classify("@클로드 아이디어 있어?", agents, { inProjectTopic: false }).classification).toBe("question"); // one agent asked
+    expect(classify("로그인 화면 추가해줘", agents, { inProjectTopic: true }).classification).toBe("task_request");
+    expect(classify("아이디어: 나중에 알림 기능", agents, { inProjectTopic: false }).classification).toBe("idea");
   });
 });
 

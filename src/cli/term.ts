@@ -2,7 +2,7 @@
  * Terminal rendering for the interactive setup/config CLI: colors, display width (Korean is
  * double-width), boxes, status lines, dot-art characters and a spinner. No dependencies.
  */
-import { avatar, MASCOT, type Look, type Mood } from "./sprites.js";
+import { mascot } from "./sprites.js";
 
 const useColor = () => !process.env.NO_COLOR && process.env.TERM !== "dumb";
 const sgr = (code: string) => (s: string) => (useColor() ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -84,55 +84,17 @@ export function box(lines: string[], opts: { title?: string; color?: (s: string)
 /* ------------------------------------------------ dot art */
 
 /** Welcome banner: the mascot on the left, title and hints on the right, in an orange box. */
-export function welcome(version: string, subtitle: string, hints: string[], look: Look = MASCOT): string {
-  const art = avatar(look, "happy");
-  const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), "", subtitle];
-  const top = Math.max(0, Math.floor((art.length - right.length) / 2));
+export function welcome(version: string, subtitle: string, hints: string[]): string {
+  const art = mascot();
+  const right = [`${c.bold("✻ AgentAgency")} ${c.dim(`v${version}`)}`, c.dim("Your Agents. Your Agency."), subtitle];
+  const rows = Math.max(art.length, right.length);
+  const artTop = Math.floor((rows - art.length) / 2);
+  const textTop = Math.floor((rows - right.length) / 2);
   const artW = Math.max(...art.map((l) => width(l)));
   const lines: string[] = [""];
-  for (let i = 0; i < art.length; i++) lines.push(` ${pad(art[i]!, artW)}   ${right[i - top] ?? ""}`);
+  for (let i = 0; i < rows; i++) lines.push(` ${pad(art[i - artTop] ?? "", artW)}   ${right[i - textTop] ?? ""}`);
   lines.push("", ...hints.map((h) => ` ${c.dim(h)}`));
   return box(lines, { width: Math.min(termWidth() - 4, 72) });
-}
-
-export interface PartyMember {
-  look: Look;
-  mood?: Mood;
-  name: string;
-  note?: string;
-}
-
-/** Characters side by side (bottom-aligned) with names under them; wraps to the terminal width. */
-export function party(members: PartyMember[], maxWidth = termWidth(), opts: { oneRow?: boolean } = {}): string[] {
-  const cells = members.map((m) => {
-    const art = avatar(m.look, m.mood ?? "idle");
-    const w = Math.max(...art.map((l) => width(l)), width(m.name) + 2, width(m.note ?? ""));
-    return { art, w, m };
-  });
-  const out: string[] = [];
-  let row: typeof cells = [];
-  const flush = () => {
-    if (!row.length) return;
-    const h = Math.max(...row.map((x) => x.art.length));
-    for (let i = 0; i < h; i++) out.push(row.map((x) => pad(x.art[i - (h - x.art.length)] ?? "", x.w)).join("  "));
-    const center = (s: string, w: number) => pad(" ".repeat(Math.max(0, Math.floor((w - width(s)) / 2))) + s, w);
-    out.push(row.map((x) => center(c.bold(x.m.name), x.w)).join("  "));
-    if (row.some((x) => x.m.note)) out.push(row.map((x) => center(c.dim(x.m.note ?? ""), x.w)).join("  "));
-    out.push("");
-    row = [];
-  };
-  let used = 0;
-  for (const cell of cells) {
-    if (row.length && used + 2 + cell.w > maxWidth) {
-      if (opts.oneRow) break;
-      flush();
-      used = 0;
-    }
-    used += (row.length ? 2 : 0) + cell.w;
-    row.push(cell);
-  }
-  flush();
-  return out;
 }
 
 /* ------------------------------------------------ status lines */
@@ -164,7 +126,14 @@ export function spinner(label: string, stream: NodeJS.WriteStream = process.stdo
   const started = Date.now();
   const draw = () => {
     const secs = Math.floor((Date.now() - started) / 1000);
-    stream.write(`\r\x1b[2K${c.accent(FRAMES[i++ % FRAMES.length]!)} ${c.accent(`${label}…`)} ${c.dim(`(${secs}s · Ctrl+C 중단)`)}`);
+    // The line must never wrap: "\r" only returns to the start of the last wrapped row, so a
+    // wrapped spinner leaves a copy of itself on every frame (narrow phone terminals).
+    const max = Math.max(10, (stream.columns || 80) - 1);
+    let head = `${FRAMES[i++ % FRAMES.length]!} ${label}…`;
+    let tail = ` (${secs}s · Ctrl+C 중단)`;
+    if (width(head + tail) > max) tail = ` ${secs}s`;
+    if (width(head + tail) > max) head = truncate(head, Math.max(4, max - width(tail)));
+    stream.write(`\r\x1b[2K${c.accent(head)}${c.dim(tail)}`);
   };
   stream.write("\x1b[?25l");
   draw();

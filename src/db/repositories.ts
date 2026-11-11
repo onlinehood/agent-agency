@@ -1217,6 +1217,18 @@ export class JobRepo {
     return rows[0] ? this.map(rows[0]) : undefined;
   }
 
+  /** Jobs that are ready to run now (used to decide whether a resource alert is worth sending). */
+  async countReady(kinds?: string[]): Promise<number> {
+    const params: unknown[] = [];
+    let kindCond = "";
+    if (kinds?.length) {
+      params.push(kinds);
+      kindCond = `AND kind = ANY($1)`;
+    }
+    const rows = await this.db.query<{ n: string | number }>(`SELECT count(*) AS n FROM jobs WHERE status='queued' AND run_at <= now() ${kindCond}`, params);
+    return Number(rows[0]?.n ?? 0);
+  }
+
   /** Claim up to `limit` ready jobs. */
   async claim(workerId: string, limit = 1, kinds?: string[]): Promise<Job[]> {
     return this.db.tx(async (q) => {

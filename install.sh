@@ -43,18 +43,14 @@ tui_box() {
 
 # >>> art (generated from src/cli/sprites.ts by `npm run art` — do not edit by hand)
 TUI_ART_256=(
-  $'       \e[38;5;203;48;5;246m▀\e[0m\e[38;5;203m▀\e[0m     '
-  $'    \e[38;5;209m▄\e[0m\e[38;5;209m▄\e[0m\e[38;5;209m▄\e[0m\e[38;5;246;48;5;209m▀\e[0m\e[38;5;209m▄\e[0m\e[38;5;209m▄\e[0m    '
-  $' \e[38;5;209m▄\e[0m\e[38;5;209;48;5;223m▀\e[0m\e[38;5;223;48;5;209m▀\e[0m\e[38;5;223;48;5;209m▀\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m▄\e[0m '
-  $'\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209;48;5;234m▀\e[0m\e[38;5;234;48;5;209m▀\e[0m\e[38;5;209;48;5;234m▀\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209;48;5;234m▀\e[0m\e[38;5;234;48;5;209m▀\e[0m\e[38;5;209;48;5;234m▀\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209;48;5;173m▀\e[0m'
-  $'\e[38;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;211;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;173m█\e[0m\e[38;5;173m█\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;211;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;173m▀\e[0m'
+  $'  \e[38;5;209m▄\e[0m\e[38;5;223m▄\e[0m\e[38;5;203;48;5;209m▀\e[0m\e[38;5;209m▄\e[0m\e[38;5;209m▄\e[0m  '
+  $'\e[38;5;209m▄\e[0m\e[38;5;209m█\e[0m\e[38;5;223;48;5;234m▀\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209m█\e[0m\e[38;5;209;48;5;234m▀\e[0m\e[38;5;209m█\e[0m\e[38;5;173m▄\e[0m'
+  $'\e[38;5;209m▀\e[0m\e[38;5;211;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;209;48;5;173m▀\e[0m\e[38;5;211;48;5;173m▀\e[0m\e[38;5;173m▀\e[0m'
 )
 TUI_ART_PLAIN=(
-  $'       █▀     '
-  $'    ▄▄▄█▄▄    '
-  $' ▄██████████▄ '
-  $'██████████████'
-  $'▀████████████▀'
+  $'  ▄▄█▄▄  '
+  $'▄███████▄'
+  $'▀███████▀'
 )
 # <<< art
 
@@ -64,7 +60,7 @@ tui_art() { if [ -n "$C_0" ]; then printf '%s' "${TUI_ART_256[$1]:-}"; else prin
 # Welcome banner: dot-art character + title, like the in-app setup.
 tui_welcome() {
   local ver=${2:-} n=${#TUI_ART_PLAIN[@]} i j r top
-  local -a right=("${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}${ver}${C_0}" "${C_DIM}Your Agents. Your Agency.${C_0}" "" "$1")
+  local -a right=("${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}${ver}${C_0}" "${C_DIM}Your Agents. Your Agency.${C_0}" "$1")
   local -a lines=("")
   top=$(((n - ${#right[@]}) / 2))
   [ "$top" -lt 0 ] && top=0
@@ -169,9 +165,19 @@ tui_run() {
   else
     "$@" >>"$TUI_LOG" 2>&1 &
     pid=$!
+    # Keep the spinner on one row: a wrapped line cannot be redrawn with \r and would pile up
+    # a copy per frame on narrow (phone) terminals. Budget: frame + space + label + " (9999s)".
+    local cols short n
+    cols=$(tput cols 2>/dev/null || echo 80)
+    short=$label
+    n=$(printf '%s' "$label" | LC_ALL=C.UTF-8 wc -m)
+    while [ "$(tui_w "$short")" -gt $((cols - 12)) ] && [ "$n" -gt 1 ]; do
+      n=$((n - 1))
+      short="$(printf '%s' "$label" | LC_ALL=C.UTF-8 sed -E "s/^(.{$n}).*/\1/")"
+    done
     printf '\e[?25l'
     while kill -0 "$pid" 2>/dev/null; do
-      printf '\r\e[2K%s%s %s…%s %s(%ds)%s' "$C_ACC" "${f[$((i % 10))]}" "$label" "$C_0" "$C_DIM" $((SECONDS - start)) "$C_0"
+      printf '\r\e[2K%s%s %s…%s %s(%ds)%s' "$C_ACC" "${f[$((i % 10))]}" "$short" "$C_0" "$C_DIM" $((SECONDS - start)) "$C_0"
       i=$((i + 1)); sleep 0.12
     done
     wait "$pid" || rc=$?

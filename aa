@@ -32,6 +32,7 @@ AgentAgency — aa 만 입력하면 메뉴가 열립니다.
   aa key               마스터 키 꺼내기 (안전한 곳에 보관 후 삭제)
   aa update            최신 버전으로 업데이트 (먼저 Telegram에서 /upgrade 권장)
   aa restart | stop | start
+  aa cursor            Cursor Agent CLI 설치 (이미지에 추가 후 재시작)
   aa web               (선택) 웹 대시보드 접속 방법
 EOF
 }
@@ -77,6 +78,20 @@ cmd_logs() {
   trap - INT
 }
 
+cmd_cursor() {
+  tui_step "Cursor Agent CLI 설치"
+  if grep -qE '^INSTALL_CURSOR_CLI=true' .env 2>/dev/null; then tui_ok ".env에 이미 켜져 있어요"
+  else
+    sed -i '/^#\? *INSTALL_CURSOR_CLI=/d' .env
+    echo "INSTALL_CURSOR_CLI=true" >>.env
+    tui_ok ".env에 INSTALL_CURSOR_CLI=true (aa update 후에도 유지됩니다)"
+  fi
+  tui_run "이미지 다시 빌드" compose build app || tui_die "빌드 실패"
+  tui_run "재시작" compose up -d || tui_die "시작 실패"
+  tui_run "준비 기다리는 중" wait_healthy || tui_die "앱이 준비되지 않았어요 — aa logs"
+  tui_note "이제 aa config → AI 구독 에서 Cursor를 골라 로그인하세요."
+}
+
 cmd_web() {
   tui_step "웹 대시보드 (선택)"
   tui_note "설정은 모두 aa config 로 할 수 있어요. 브라우저로 현황을 보고 싶을 때만 씁니다."
@@ -98,10 +113,11 @@ menu() {
   local where=$APP_DIR i
   [ "${#where}" -gt 40 ] && where="…${where: -39}"
   echo
-  # The team as dot-art characters (from the running app), or the knight when it is down.
-  if [ -n "${h:-}" ] && app -T -e COLUMNS="$(($(tui_cols) - 2))" app agent-agency art --party --one-row 2>/dev/null | sed 's/^/  /'; then :
-  else for ((i = 0; i < ${#TUI_ART_PLAIN[@]}; i++)); do printf '  %s\n' "$(tui_art "$i")"; done; fi
-  TUI_BOX_MIN=52 tui_box "${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}"
+  # Mascot on the left, name / state / location on the right.
+  local -a right=("${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}")
+  local -a lines=()
+  for ((i = 0; i < ${#TUI_ART_PLAIN[@]}; i++)); do lines+=(" $(tui_art "$i")   ${right[$i]:-}"); done
+  TUI_BOX_MIN=52 tui_box "${lines[@]}"
   while :; do
     echo
     TUI_DEFAULT=0 tui_select "무엇을 할까요?" \
@@ -139,6 +155,7 @@ case "${1:-}" in
   logs) cmd_logs ;;
   token) app -T app agent-agency setup-token ;;
   web) cmd_web ;;
+  cursor) cmd_cursor ;;
   login)
     case "${2:-}" in
       claude) app -it app claude auth login --claudeai ;;

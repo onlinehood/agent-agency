@@ -31,7 +31,12 @@ services:
           memory: ${AA_DB_MEMORY:-1g}
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # Optional Cursor Agent CLI (official installer). Set INSTALL_CURSOR_CLI=true in .env
+        # (or run `aa cursor`) so it stays installed across `aa update`.
+        INSTALL_CURSOR_CLI: ${INSTALL_CURSOR_CLI:-false}
     image: agent-agency:latest
     restart: unless-stopped
     # Longer than AA_SHUTDOWN_GRACE_MS (45s) so running work can stop cleanly and resume after restart.

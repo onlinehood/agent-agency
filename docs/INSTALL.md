@@ -145,6 +145,7 @@ Claude Code처럼 한 단계씩 진행됩니다. 질문에는 ↑↓(또는 숫�
 | `aa backup` | 지금 백업 |
 | `aa update` | 최신 버전으로 업데이트 |
 | `aa restart` / `aa stop` | 재시작 / 중지 |
+| `aa cursor` | Cursor Agent CLI 설치 (기본 이미지에는 없음) |
 | `aa web` | (선택) 웹 대시보드 접속 방법 |
 
 ---
@@ -177,6 +178,22 @@ Claude Code처럼 한 단계씩 진행됩니다. 질문에는 ↑↓(또는 숫�
 | 권장 (동시 2개) | 4 | 8~16GB | 60GB |
 
 OCI Always Free(ARM), AWS, Azure, GCP, 일반 VPS 모두 됩니다. 특정 클라우드 기능은 쓰지 않습니다.
+
+> **RAM 1GB 서버(예: OCI Always Free의 AMD 인스턴스)는 권장하지 않습니다.** PostgreSQL, 앱, AI CLI가 함께 돌기에는 빠듯해서 작업이 자주 미뤄집니다. OCI라면 같은 무료 등급의 **Ampere A1(ARM, 최대 4 OCPU · 24GB)** 인스턴스를 쓰세요. 꼭 작은 서버를 써야 한다면 아래 "작은 서버에 스왑 추가"를 하세요.
+
+### 1.1.1 작은 서버에 스왑 추가 (RAM 4GB 미만일 때)
+
+디스크 일부를 메모리처럼 쓰게 해 메모리 부족을 덜어 줍니다. 느려지지만 작업이 멈추지는 않습니다. 아래는 4GB 스왑을 만들고 재부팅 후에도 유지하는 명령입니다.
+
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
+```bash
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+`free -h`의 Swap 줄에 4.0Gi가 보이면 됩니다. AgentAgency는 남은 스왑의 절반을 사용 가능한 메모리로 계산합니다.
 
 ### 1.2 Docker 설치
 
@@ -451,7 +468,21 @@ docker compose exec -it app codex login --device-auth
 docker compose exec -it -e NO_BROWSER=true app gemini
 ```
 
-"Login with Google"을 고르고 안내대로 로그인한 뒤 `/quit`로 나옵니다. 설정에서 Gemini를 고르면 기능 플래그 `executors.gemini`도 자동으로 켜집니다.
+"Login with Google"을 고르고, 화면의 주소를 브라우저에서 열어 로그인한 뒤 받은 코드를 붙여 넣고 `/quit`로 나옵니다. 설정에서 Gemini를 고르면 기능 플래그 `executors.gemini`도 자동으로 켜집니다.
+
+**Cursor (선택, Cursor 구독)**
+
+Cursor Agent CLI는 기본 이미지에 들어 있지 않습니다. 먼저 서버에서 설치합니다(이미지를 다시 빌드하므로 몇 분 걸립니다).
+
+```bash
+aa cursor
+```
+
+`.env`에 `INSTALL_CURSOR_CLI=true`가 들어가서 `aa update` 뒤에도 유지됩니다. 설치가 끝나면 `aa config` → AI 구독에서 Cursor를 골라 로그인합니다(`cursor-agent login`, 기능 플래그 `executors.cursor`도 자동으로 켜짐).
+
+**나중에 추가하기**
+
+처음 설정에서 고르지 않은 AI도 언제든 `aa config` → **AI 구독**에서 Space로 고르고 Enter를 누르면 로그인과 검증을 이어서 합니다. 그다음 `aa config` → **에이전트** → 에이전트 추가에서 그 실행기로 에이전트를 만들면 팀에 합류합니다.
 
 **검증**
 
@@ -477,15 +508,16 @@ AI 팀은 작업 결과를 GitHub PR로 올립니다. 계정 종류에 따라 �
    - Administration: Read and write (저장소 생성)
    - Contents: Read and write
    - Pull requests: Read and write
-   - Checks: Read-only
-   - Metadata: Read-only
+   - Metadata: Read-only (자동으로 "Required"로 들어갑니다)
+
+   Fine-grained 토큰 화면에는 "Checks" 권한이 없습니다. 필요 없으니 찾지 않아도 됩니다.
 4. 만든 토큰(`github_pat_...`)을 설정 화면에 붙여 넣습니다. 이어서 새 저장소를 만들 계정/조직을 묻습니다(기본값: 토큰 주인).
 
 **GitHub App 만들기 (조직용)**
 
 1. 조직 Settings → Developer settings → GitHub Apps → New GitHub App
 2. 이름과 Homepage URL(아무 주소)을 입력하고, Webhook의 "Active" 체크를 해제합니다.
-3. Repository permissions를 PAT와 같은 다섯 가지로 지정합니다(Administration 쓰기는 조직에 새 저장소를 만들 때 필요).
+3. Repository permissions를 PAT와 같게 지정합니다(Administration 쓰기는 조직에 새 저장소를 만들 때 필요). GitHub App에는 Checks 권한도 있지만 필수는 아닙니다.
 4. 만든 뒤 "Generate a private key"로 키 파일(.pem)을 내려받습니다.
 5. "Install App"에서 조직에 설치합니다. 설치 후 주소창의 `.../installations/숫자` 가 Installation ID입니다.
 6. 설정 화면에 App ID, Installation ID를 넣고, 키 파일(.pem) 내용을 통째로 붙여 넣습니다(마지막 줄 `-----END ... PRIVATE KEY-----`에서 자동으로 확인됩니다). 마지막으로 조직 이름을 넣습니다.
@@ -495,15 +527,7 @@ AI 팀은 작업 결과를 GitHub PR로 올립니다. 계정 종류에 따라 �
 - **실행 우선순위**: 기본값 "공식 구독 Cloud → 격리된 Local CLI"를 그대로 두면 됩니다. Cloud 실행기는 검증 전에는 자동으로 건너뛰므로 실제로는 Local CLI가 쓰입니다.
 - **자동 전환**: 실행기에 문제가 생기면 다른 구독 실행기로 넘어갑니다. 종량제 유료 API로는 절대 넘어가지 않습니다.
 - **조직 세계관**: 회사(CEO·수석비서·팀장), 노가다(건물주·십장·현장 작업자), 대학(교수·조교·학생) 중에 고릅니다. 언제든 Telegram에서 `/mode`로 바꿀 수 있습니다.
-- **초기 에이전트**: 로그인한 구독에 맞춰 에이전트(클로드, 코덱스, 제미니)를 고르고 이름, 성격, **모습**을 정합니다. 첫 번째 에이전트가 진행자 AI가 됩니다. 나중에 `aa config` → 에이전트 에서 추가·수정합니다.
-
-**에이전트 캐릭터**
-
-에이전트마다 작은 캐릭터가 하나씩 생깁니다. **모양 · 색 · 소품**을 골라 꾸미고, **표정은 지금 하는 일**을 보여 줍니다(쉬는 중, 일하는 중, 승인 기다림, 막힘, 완료). 설정 화면, 완료 화면, `aa` 관리 메뉴에 내 팀이 이 모습으로 나옵니다. 보이는 모습일 뿐이라 역할·권한·작업 배정은 바뀌지 않습니다. 나중에 `aa config` → 에이전트 → 모습 꾸미기 에서 바꿉니다.
-
-<img src="images/characters.png" alt="캐릭터: 모양, 소품, 표정" width="720">
-
-기본 모습은 실행기마다 다릅니다(Claude 주황 몽돌+새싹, Codex 하늘 동글+목도리, Gemini 보라 물방울+리본). 터미널이 트루컬러를 지원하면(`COLORTERM=truecolor`) 원래 색으로, 아니면 256색으로 그립니다.
+- **초기 에이전트**: 로그인한 구독에 맞춰 에이전트(클로드, 코덱스, 제미니)를 고르고 이름과 성격을 정합니다. 첫 번째 에이전트가 진행자 AI가 됩니다. 나중에 `aa config` → 에이전트 에서 추가·수정합니다.
 
 ### 5.6 진단과 운영 시작
 
@@ -634,6 +658,7 @@ docker compose exec app node dist/cli.js doctor
 
 | 증상 | 원인과 해결 |
 |---|---|
+| Telegram에 "서버 자원이 부족해 대기 중인 작업을 잠시 미룹니다" | 사용 가능한 메모리(또는 디스크)가 부족해 작업을 미루는 중입니다. 여유가 생기면 자동으로 이어서 하고, 알림은 6시간에 한 번만 옵니다. RAM이 4GB보다 작다면 [스왑을 추가](#111-작은-서버에-스왑-추가-ram-4gb-미만일-때)하거나 더 큰 서버로 옮기세요. `aa doctor`의 "서버 자원" 줄에서 현재 값을 볼 수 있습니다. |
 | `app`이 계속 재시작하고 로그에 `password authentication failed` | 첫 실행 뒤 `.env`의 `POSTGRES_PASSWORD`를 바꿨습니다. 원래 값으로 되돌리세요. 아직 데이터가 없다면 `docker compose down -v`로 볼륨까지 지우고 다시 시작할 수 있습니다(**모든 데이터 삭제**). |
 | `docker compose up`이 `set POSTGRES_PASSWORD in .env` 오류로 멈춤 | `.env`가 없거나 비밀번호가 비어 있습니다. 2.4를 다시 확인하세요. |
 | `대화형 터미널이 필요합니다` | 설정은 키보드로 조작하는 화면이라 SSH 터미널에서 직접 `aa setup` 을 실행해야 합니다(스크립트나 파이프로는 안 됩니다). |

@@ -15,9 +15,8 @@ import { logger } from "./util/logger.js";
 import { ensureControlToken, httpControlClient } from "./ops/control.js";
 import { SetupCli, ttyDeps } from "./cli/setup.js";
 import { TtyPrompter, CancelSignal } from "./cli/prompt.js";
-import { c, party, termWidth } from "./cli/term.js";
-import { avatar, MASCOT } from "./cli/sprites.js";
-import { SetupService } from "./setup/service.js";
+import { c } from "./cli/term.js";
+import { mascot } from "./cli/sprites.js";
 
 loadDotEnv();
 
@@ -35,7 +34,7 @@ const USAGE = `AgentAgency — Your Agents. Your Agency.
   restore <file>        백업 복원 (복원 전 현재 상태를 자동 백업)
   upgrade-check         업데이트 전 호환성 검사 + 사전 백업
   setup-token           (선택) 웹 초기 설정용 1회용 토큰 재발급
-  art [--party]         도트 캐릭터 출력 (--party: 내 에이전트 팀과 지금 상태)
+  art                   마스코트 출력
 `;
 
 async function main(): Promise<void> {
@@ -91,12 +90,7 @@ async function main(): Promise<void> {
       return;
     }
     case "art": {
-      if (args.includes("--party")) {
-        const app = await createApp(config, { skipDetect: true });
-        const members = await new SetupService(app).party();
-        console.log((members.length ? party(members, termWidth(), { oneRow: args.includes("--one-row") }) : avatar(MASCOT, "happy")).join("\n"));
-        await app.stop();
-      } else console.log(avatar(MASCOT, "happy").join("\n"));
+      console.log(mascot().join("\n"));
       return;
     }
     case "migrate": {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { avatar, MASCOT } from "../src/cli/sprites.js";
+import { mascot } from "../src/cli/sprites.js";
 
 /**
  * install.sh runs before Docker/Node exist, so it carries a pre-rendered copy of the banner
@@ -13,7 +13,7 @@ const ansiC = (s: string) => `$'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").
 
 function block(): string {
   const arr = (name: string, lines: string[]) => `${name}=(\n${lines.map((l) => `  ${ansiC(l)}`).join("\n")}\n)`;
-  return ["# >>> art (generated from src/cli/sprites.ts by `npm run art` — do not edit by hand)", arr("TUI_ART_256", avatar(MASCOT, "happy", "256")), arr("TUI_ART_PLAIN", avatar(MASCOT, "happy", "none")), "# <<< art"].join("\n");
+  return ["# >>> art (generated from src/cli/sprites.ts by `npm run art` — do not edit by hand)", arr("TUI_ART_256", mascot("256")), arr("TUI_ART_PLAIN", mascot("none")), "# <<< art"].join("\n");
 }
 
 describe("installer banner art", () => {
