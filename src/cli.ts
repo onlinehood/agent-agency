@@ -195,6 +195,7 @@ async function main(): Promise<void> {
       else {
         console.log(`${c.red("✗")} Gemini 로그인 정보가 저장되지 않았어요.${fellBack ? " (Gemini가 API 키 화면으로 넘어가서 닫았어요)" : ""}`);
         if (d.reason) console.log(c.dim(`  Gemini가 남긴 이유:\n${d.reason.replace(/^/gm, "    ")}`));
+        else if (d.logTail) console.log(c.dim(`  Gemini 기록의 마지막 오류·경고 (${log}):\n${d.logTail.replace(/^/gm, "    ")}`));
         console.log(`  ${d.hint}`);
       }
       process.exitCode = d.ok ? 0 : 1;

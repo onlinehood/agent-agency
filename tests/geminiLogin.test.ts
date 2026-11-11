@@ -49,6 +49,10 @@ describe("gemini login helpers", () => {
     expect(d.reason).not.toContain("ENOENT");
     expect(d.hint).toContain("개인 Gmail");
     expect(diagnoseLogin(home, path.join(home, "missing.log")).hint).toContain("Enter는 한 번만");
+    // No known reason: show the last error/warning lines so the user can send them.
+    const other = path.join(home, "other.log");
+    fs.writeFileSync(other, ["[DEBUG] noise", "[WARN] Code Assist setup: quota project missing", "[INFO] ok"].join("\n"));
+    expect(diagnoseLogin(home, other).logTail).toBe("[WARN] Code Assist setup: quota project missing");
     // No reason logged, but Gemini switched itself to the API key: say Google refused the account.
     expect(diagnoseLogin(home, path.join(home, "missing.log"), true).hint).toContain("무료 Gemini CLI(Code Assist)를 열어 주지 않았다");
     fs.writeFileSync(path.join(home, "settings.json"), JSON.stringify({ security: { auth: { selectedType: "gemini-api-key" } } }));

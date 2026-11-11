@@ -84,6 +84,8 @@ export interface LoginDiagnosis {
   ok: boolean;
   reason?: string;
   hint?: string;
+  /** Last error/warning lines of the debug log when no known reason matched (for a screenshot). */
+  logTail?: string;
 }
 
 const REASON = /(IneligibleTier|ineligible|not eligible|Account validation required|ValidationRequired|ProjectIdRequired|GOOGLE_CLOUD_PROJECT|Failed to sign in|Failed to authenticate|Error authenticating|invalid_grant|UNSUPPORTED_LOCATION|UNKNOWN_LOCATION|RESTRICTED_AGE|RESTRICTED_NETWORK|DASHER_USER|INELIGIBLE_ACCOUNT|NON_USER_ACCOUNT|permission denied|PERMISSION_DENIED)/i;
@@ -91,16 +93,12 @@ const REASON = /(IneligibleTier|ineligible|not eligible|Account validation requi
 /** After `gemini` exits: were Login-with-Google credentials saved? If not, why (from the debug log)? */
 export function diagnoseLogin(home = geminiHome(), logFile?: string, fellBack = false): LoginDiagnosis {
   if (fs.existsSync(path.join(home, "oauth_creds.json"))) return { ok: true };
-  let lines: string[] = [];
-  if (logFile && fs.existsSync(logFile)) {
-    lines = fs
-      .readFileSync(logFile, "utf8")
-      .split("\n")
-      .filter((l) => REASON.test(l) && !l.includes("[DEBUG]"))
-      .map((l) => l.replace(/\s+/g, " ").trim().slice(0, 220));
-  }
+  let all: string[] = [];
+  if (logFile && fs.existsSync(logFile)) all = fs.readFileSync(logFile, "utf8").split("\n").map((l) => l.replace(/\s+/g, " ").trim().slice(0, 220));
+  const lines = all.filter((l) => REASON.test(l) && !l.includes("[DEBUG]"));
   const reason = [...new Set(lines)].slice(-3).join("\n") || undefined;
-  return { ok: false, reason, hint: reason ? hintFor(reason) : fellBack ? FELL_BACK_HINT : hintFor("") };
+  const tail = reason ? undefined : [...new Set(all.filter((l) => /\[(ERROR|WARN)\]/.test(l)))].slice(-6).join("\n") || (all.some(Boolean) ? undefined : "(Gemini 기록이 비어 있어요)");
+  return { ok: false, reason, logTail: tail, hint: reason ? hintFor(reason) : fellBack ? FELL_BACK_HINT : hintFor("") };
 }
 
 const FELL_BACK_HINT =
