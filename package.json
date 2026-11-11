@@ -1,0 +1,51 @@
+{
+  "name": "agent-agency",
+  "version": "0.1.0",
+  "description": "AgentAgency — Your Agents. Your Agency. Self-hosted multi-agent operations platform managed from Telegram.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "agent-agency": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts start",
+    "start": "node dist/cli.js start",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src tests",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "doctor": "tsx src/cli.ts doctor",
+    "setup": "tsx src/cli.ts setup",
+    "migrate": "tsx src/cli.ts migrate",
+    "backup": "tsx src/cli.ts backup",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "art": "UPDATE_ART=1 vitest run tests/art.test.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.15",
+    "@hono/node-server": "^2.1.6",
+    "@octokit/rest": "^21.0.2",
+    "execa": "^9.5.2",
+    "grammy": "^1.33.0",
+    "hono": "^4.13.16",
+    "pg": "^8.23.1",
+    "pino": "^9.6.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.23.1",
+    "eslint": "^10.14.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  }
+}

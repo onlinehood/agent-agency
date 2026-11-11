@@ -1,0 +1,28 @@
+# Optional overlay: run each project's work in its own isolated, non-root Docker container.
+#
+#   docker build -f docker/workspace.Dockerfile -t agent-agency/workspace:latest .
+#   docker compose -f docker-compose.yml -f docker-compose.workspaces.yml up -d --build
+#
+# The app talks to the host Docker daemon, which resolves bind-mount paths on the HOST. Data and
+# CLI login directories are therefore bind-mounted at identical paths inside and outside.
+# Mounting the Docker socket gives the app control of the host's Docker — use a dedicated server.
+# Defaults live under /srv/agent-agency/data (git-ignored), next to the checkout in /srv/agent-agency.
+
+services:
+  app:
+    build:
+      args:
+        INSTALL_DOCKER_CLI: "true"
+    user: "1000:${DOCKER_GID:-999}"
+    environment:
+      AA_WORKSPACE_MODE: docker
+      AA_WORKSPACE_IMAGE: agent-agency/workspace:latest
+      AA_WORKSPACE_NETWORK: ${AA_WORKSPACE_NETWORK:-bridge}
+      AA_DATA_DIR: ${AA_HOST_DATA_DIR:-/srv/agent-agency/data/app}
+      AA_CLAUDE_HOME_HOST: ${AA_HOST_CLAUDE_DIR:-/srv/agent-agency/data/claude}
+      AA_CODEX_HOME_HOST: ${AA_HOST_CODEX_DIR:-/srv/agent-agency/data/codex}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${AA_HOST_DATA_DIR:-/srv/agent-agency/data/app}:${AA_HOST_DATA_DIR:-/srv/agent-agency/data/app}
+      - ${AA_HOST_CLAUDE_DIR:-/srv/agent-agency/data/claude}:/home/agent/.claude
+      - ${AA_HOST_CODEX_DIR:-/srv/agent-agency/data/codex}:/home/agent/.codex

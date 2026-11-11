@@ -1,0 +1,75 @@
+# AgentAgency — single Linux server deployment (cloud-neutral, Kubernetes not required).
+#
+#   cp .env.example .env    # set POSTGRES_PASSWORD (and optionally AA_BACKUP_PASSPHRASE)
+#   docker compose up -d
+#   docker compose logs app | grep -A3 "초기 설정"     # one-time setup token
+#   ssh -L 8080:127.0.0.1:8080 <server>                # private access to the setup wizard
+#
+# Data lives in named volumes (persist across container re-creation). Backups are written to
+# ./backups on the host so they can be copied to any other provider.
+
+name: agent-agency
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agentagency
+      POSTGRES_USER: agentagency
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentagency -d agentagency"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: ${AA_DB_MEMORY:-1g}
+
+  app:
+    build: .
+    image: agent-agency:latest
+    restart: unless-stopped
+    # Longer than AA_SHUTDOWN_GRACE_MS (45s) so running work can stop cleanly and resume after restart.
+    stop_grace_period: 60s
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://agentagency:${POSTGRES_PASSWORD}@db:5432/agentagency
+      AA_DATA_DIR: /data
+      AA_WEB_BIND: 0.0.0.0
+      TELEGRAM_MODE: polling
+    ports:
+      # Bound to localhost: reach the wizard over SSH tunnel / VPN. Put a TLS reverse proxy in
+      # front only if a public HTTPS URL is required (webhooks / OAuth callbacks).
+      - "127.0.0.1:${AA_WEB_PORT:-8080}:8080"
+    volumes:
+      - appdata:/data
+      # Create it first so it is owned by the app user (uid 1000):
+      #   mkdir -p backups && sudo chown 1000:1000 backups
+      - ./backups:/data/backups
+      - claude-auth:/home/agent/.claude
+      - codex-auth:/home/agent/.codex
+      - gemini-auth:/home/agent/.gemini
+      - cursor-auth:/home/agent/.cursor
+    deploy:
+      resources:
+        limits:
+          cpus: "${AA_APP_CPUS:-2}"
+          memory: ${AA_APP_MEMORY:-2g}
+
+volumes:
+  pgdata:
+  appdata:
+  claude-auth:
+  codex-auth:
+  gemini-auth:
+  cursor-auth:

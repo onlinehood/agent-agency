@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# AgentAgency manager. `aa` alone opens the menu; `aa help` lists the short commands.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+APP_DIR="$(pwd)"
+# Same terminal UI as the installer (single source of truth).
+# shellcheck source=/dev/null
+source <(sed -n '/^# >>> tui/,/^# <<< tui/p' install.sh)
+trap '[ "${TUI_FAILED:-0}" = 1 ] || rm -f "$TUI_LOG"' EXIT
+
+DOCKER="docker"
+if ! docker info >/dev/null 2>&1; then DOCKER="sudo docker"; fi
+compose() { $DOCKER compose "$@"; }
+# Pass the terminal's colour capability into the container (truecolor sprites when supported).
+app() { compose exec ${COLORTERM:+-e COLORTERM="$COLORTERM"} "$@"; }
+healthy() { compose exec -T app curl -fsS --noproxy "*" http://127.0.0.1:8080/api/health 2>/dev/null; }
+wait_healthy() { local n; for n in $(seq 1 90); do healthy >/dev/null && return 0; sleep 2; done; return 1; }
+version() { grep -o '"version": "[^"]*"' package.json | cut -d'"' -f4; }
+
+usage() {
+  cat <<'EOF'
+AgentAgency — aa 만 입력하면 메뉴가 열립니다.
+
+  aa setup             처음 설정 (Telegram · AI 로그인 · GitHub · 기본 설정)
+  aa config            설정 바꾸기 (모든 설정을 메뉴로)
+  aa status            상태
+  aa logs              로그 (Ctrl+C로 나가기)
+  aa doctor            전체 연결 진단
+  aa login claude      Claude 구독 로그인 (codex, gemini)
+  aa verify <실행기>    실행기 검증 (claude-cli, codex-cli, gemini-cli ...)
+  aa backup            지금 백업 (복원 검증 포함)
+  aa key               마스터 키 꺼내기 (안전한 곳에 보관 후 삭제)
+  aa update            최신 버전으로 업데이트 (먼저 Telegram에서 /upgrade 권장)
+  aa restart | stop | start
+  aa web               (선택) 웹 대시보드 접속 방법
+EOF
+}
+
+cmd_status() {
+  tui_step "상태"
+  local h svc state
+  while read -r svc state; do
+    [ -z "$svc" ] && continue
+    case "$state" in *healthy*|running*) tui_ok "$svc ${C_DIM}$state${C_0}" ;; *) tui_fail "$svc ${C_DIM}$state${C_0}" ;; esac
+  done < <(compose ps -a --format '{{.Service}} {{.State}} {{.Health}}' 2>/dev/null || true)
+  if h=$(healthy); then
+    case "$h" in *'"telegram":true'*) tui_ok "Telegram 봇 동작 중" ;; *) tui_warn "Telegram 봇 멈춤 — aa config → Telegram" ;; esac
+    tui_note "실행 중인 작업: $(printf '%s' "$h" | sed -n 's/.*"running":\([0-9]*\).*/\1/p')개"
+  else
+    tui_fail "앱이 응답하지 않아요 — aa logs 로 확인하세요"
+  fi
+}
+
+cmd_update() {
+  tui_step "업데이트"
+  tui_note "진행 중인 작업이 있으면 먼저 Telegram에서 /upgrade 로 안전한 시점을 확인하세요."
+  tui_run "코드 받기" git pull --ff-only || tui_die "git pull 실패 (aa 폴더에서 직접 확인하세요)"
+  tui_run "이미지 빌드" compose build || tui_die "빌드 실패"
+  tui_run "새 버전 시작" compose up -d || tui_die "시작 실패"
+  tui_run "준비 기다리는 중" wait_healthy || tui_die "앱이 준비되지 않았어요 — aa logs"
+  tui_ok "v$(version) · 유지보수 모드였다면 자동으로 해제됩니다"
+}
+
+cmd_key() {
+  tui_step "마스터 키"
+  compose cp app:/data/master.key ./master.key.backup >/dev/null 2>&1 || tui_die "꺼내지 못했어요 (앱이 실행 중인지 확인)"
+  chmod 600 ./master.key.backup
+  tui_ok "$APP_DIR/master.key.backup"
+  tui_note "비밀번호 관리자 등 안전한 곳에 보관한 뒤 서버에서 지우세요:  rm $APP_DIR/master.key.backup"
+  tui_note "이 키가 없으면 백업에서 Telegram·GitHub 토큰을 복구할 수 없어요."
+}
+
+cmd_logs() {
+  tui_note "Ctrl+C 로 나가기"
+  trap ':' INT
+  compose logs -f --tail=200 app || true
+  trap - INT
+}
+
+cmd_web() {
+  tui_step "웹 대시보드 (선택)"
+  tui_note "설정은 모두 aa config 로 할 수 있어요. 브라우저로 현황을 보고 싶을 때만 씁니다."
+  tui_sub "1. aa config → 웹 대시보드 에서 비밀번호를 정합니다"
+  tui_sub "2. 내 PC 터미널에서:  ${C_ACC}ssh -L 8080:127.0.0.1:8080 $(id -un)@$(hostname -I 2>/dev/null | awk '{print $1}')${C_0}"
+  tui_sub "3. 브라우저에서 ${C_ACC}http://localhost:8080${C_0}"
+}
+
+menu() {
+  local h state="${C_RED}멈춤${C_0} ${C_DIM}— 시작: aa start${C_0}"
+  if [ -n "$(compose ps --status running -q app 2>/dev/null)" ]; then
+    state="${C_YEL}시작 중${C_0}"
+    wait_healthy || true
+  fi
+  if h=$(healthy); then
+    state="${C_GRN}실행 중${C_0}"
+    case "$h" in *'"telegram":true'*) state+=" · Telegram ${C_GRN}✓${C_0}" ;; *) state+=" · Telegram ${C_YEL}설정 필요${C_0}" ;; esac
+  fi
+  local where=$APP_DIR i
+  [ "${#where}" -gt 40 ] && where="…${where: -39}"
+  echo
+  # The team as dot-art characters (from the running app), or the knight when it is down.
+  if [ -n "${h:-}" ] && app -T -e COLUMNS="$(($(tui_cols) - 2))" app agent-agency art --party --one-row 2>/dev/null | sed 's/^/  /'; then :
+  else for ((i = 0; i < ${#TUI_ART_PLAIN[@]}; i++)); do printf '  %s\n' "$(tui_art "$i")"; done; fi
+  TUI_BOX_MIN=52 tui_box "${C_BOLD}✻ AgentAgency${C_0} ${C_DIM}v$(version)${C_0}" "$state" "${C_DIM}$where${C_0}"
+  while :; do
+    echo
+    TUI_DEFAULT=0 tui_select "무엇을 할까요?" \
+      "설정 바꾸기|Telegram · AI · GitHub · 에이전트 …" \
+      "상태 보기" \
+      "로그 보기" \
+      "전체 진단" \
+      "지금 백업" \
+      "업데이트" \
+      "재시작" \
+      "마스터 키 꺼내기|설치 후 한 번" \
+      "처음 설정 다시" \
+      "시작|멈춰 있을 때" \
+      "끝내기" || return 0
+    case "$TUI_REPLY" in
+      0) app -it app agent-agency config --continue || true ;;
+      1) cmd_status ;;
+      2) cmd_logs ;;
+      3) app -T app agent-agency doctor || true ;;
+      4) tui_run "백업 (복원 검증 포함)" app -T app agent-agency backup && tail -n 2 "$TUI_LOG" | sed "s/^/     ${C_DIM}/; s/\$/${C_0}/" || true ;;
+      5) cmd_update || true ;;
+      6) tui_run "재시작" compose restart app && tui_run "준비 기다리는 중" wait_healthy || true ;;
+      7) cmd_key || true ;;
+      8) app -it app agent-agency setup --continue || true ;;
+      9) tui_run "시작" compose up -d && tui_run "준비 기다리는 중" wait_healthy || true ;;
+      10) return 0 ;;
+    esac
+  done
+}
+
+case "${1:-}" in
+  "") if [ "$TUI_INTERACTIVE" = 1 ]; then menu; else usage; fi ;;
+  setup|config) app -it app agent-agency "$1" ;;
+  status) cmd_status ;;
+  logs) cmd_logs ;;
+  token) app -T app agent-agency setup-token ;;
+  web) cmd_web ;;
+  login)
+    case "${2:-}" in
+      claude) app -it app claude auth login --claudeai ;;
+      codex) app -it app codex login --device-auth ;;
+      gemini) app -it -e NO_BROWSER=true app gemini ;;
+      *) echo "사용법: aa login claude|codex|gemini" >&2; exit 2 ;;
+    esac
+    tui_note "로그인했으면 aa verify ${2}-cli 로 검증하세요 (aa config → AI 구독 에서도 됩니다)."
+    ;;
+  verify)
+    [ -n "${2:-}" ] || { echo "사용법: aa verify claude-cli|codex-cli|gemini-cli|cursor-cli" >&2; exit 2; }
+    app -T app agent-agency verify-executor "$2"
+    ;;
+  doctor) app -T app agent-agency doctor ;;
+  backup) tui_run "백업 (복원 검증 포함)" app -T app agent-agency backup && tail -n 2 "$TUI_LOG" ;;
+  key) cmd_key ;;
+  update) cmd_update ;;
+  restart) tui_run "재시작" compose restart app && tui_run "준비 기다리는 중" wait_healthy ;;
+  stop) tui_run "중지" compose stop ;;
+  start) tui_run "시작" compose up -d && tui_run "준비 기다리는 중" wait_healthy ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac
