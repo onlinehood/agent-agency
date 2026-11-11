@@ -39,6 +39,8 @@ describe("additional executors: Gemini CLI and Cursor CLI", () => {
     const c = new CursorCliAdapter("cursor-agent");
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).toEqual(expect.arrayContaining(["--mode", "plan", "--output-format", "json"]));
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).not.toContain("--force");
+    // Non-interactive runs must not stop at Cursor's workspace-trust prompt.
+    expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).toContain("--trust");
     process.env.CURSOR_API_KEY = "x";
     process.env.GOOGLE_GENAI_USE_VERTEXAI = "true";
     const env = minimalEnv();

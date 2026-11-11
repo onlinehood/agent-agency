@@ -1,5 +1,5 @@
 import readline from "node:readline";
-import { c, width, termWidth } from "./term.js";
+import { c, width, termWidth, columnsOf, truncate, packParts } from "./term.js";
 
 /** Esc: leave the current question (skip a setup step, or go back in the settings menu). */
 export class BackSignal extends Error {
@@ -56,6 +56,21 @@ interface Key {
  * rounded box, compact answer echo afterwards. Raw mode is only on while a question is shown, so
  * child processes (CLI logins) get a normal terminal in between.
  */
+/** An option's dim hint, shortened (or dropped) so the option stays on one line. */
+function fitHint(prefix: string, hint?: string): string {
+  if (!hint) return "";
+  const room = termWidth() - 1 - width(prefix) - 4;
+  if (room < 6) return "";
+  return `  ${c.dim(`· ${truncate(hint, room)}`)}`;
+}
+
+/** Footer key help, split at " · " onto more lines on a narrow screen. */
+function keysLine(text: string): string {
+  return packParts(text.split(" · "), termWidth() - 3)
+    .map((l) => `  ${c.dim(l)}`)
+    .join("\n");
+}
+
 export class TtyPrompter implements Prompter {
   constructor(
     private input: NodeJS.ReadStream = process.stdin,
@@ -65,8 +80,8 @@ export class TtyPrompter implements Prompter {
   private ask<R>(render: () => string[], onKey: (str: string | undefined, key: Key, done: (r: R, echo: string) => void) => void): Promise<R> {
     return new Promise<R>((resolve, reject) => {
       let prevRows = 0;
-      const cols = () => this.output.columns || 80;
-      const rows = (lines: string[]) => lines.reduce((n, l) => n + Math.max(1, Math.ceil(width(l) / cols())), 0);
+      const cols = () => columnsOf(this.output);
+      const rows = (lines: string[]) => lines.flatMap((l) => l.split("\n")).reduce((n, l) => n + Math.max(1, Math.ceil(width(l) / cols())), 0);
       const clear = () => {
         if (!prevRows) return;
         this.output.write(`\r${prevRows > 1 ? `\x1b[${prevRows - 1}A` : ""}\x1b[0J`);
@@ -138,7 +153,7 @@ export class TtyPrompter implements Prompter {
         c.gray(`╭${"─".repeat(boxW - 2)}╮`),
         `${c.gray("│")} ${content}${" ".repeat(Math.max(0, boxW - 4 - width(content)))} ${c.gray("│")}`,
         c.gray(`╰${"─".repeat(boxW - 2)}╯`),
-        error ? `  ${c.red(error)}` : `  ${c.dim(q.hint ?? (mode === "multiline" ? "붙여 넣으면 끝 줄에서 자동으로 확인됩니다 · Ctrl+D 확인 · Esc 뒤로" : KEYS_TEXT))}`,
+        error ? `  ${c.red(error)}` : keysLine(q.hint ?? (mode === "multiline" ? "붙여 넣으면 끝 줄에서 자동으로 확인됩니다 · Ctrl+D 확인 · Esc 뒤로" : KEYS_TEXT)),
       ];
     };
     return this.ask<string>(render, (str, key, done) => {
@@ -211,10 +226,10 @@ export class TtyPrompter implements Prompter {
       this.header(q.message),
       ...q.options.map((o, n) => {
         const label = `${n + 1}. ${o.label}`;
-        const hint = o.hint ? `  ${c.dim(`· ${o.hint}`)}` : "";
+        const hint = fitHint(`    ${label}`, o.hint);
         return n === i ? `  ${c.accent(`❯ ${label}`)}${hint}` : `    ${label}${hint}`;
       }),
-      `  ${c.dim(q.hint ?? KEYS_SELECT)}`,
+      keysLine(q.hint ?? KEYS_SELECT),
     ];
     return this.ask<T>(render, (str, key, done) => {
       if (key.name === "up" || key.name === "k") i = (i - 1 + q.options.length) % q.options.length;
@@ -234,10 +249,10 @@ export class TtyPrompter implements Prompter {
       this.header(q.message),
       ...q.options.map((o, n) => {
         const mark = picked.has(n) ? c.accent("◉") : c.dim("◯");
-        const hint = o.hint ? `  ${c.dim(`· ${o.hint}`)}` : "";
+        const hint = fitHint(`    ${mark} ${o.label}`, o.hint);
         return n === i ? `  ${c.accent("❯")} ${mark} ${c.accent(o.label)}${hint}` : `    ${mark} ${o.label}${hint}`;
       }),
-      error ? `  ${c.red(error)}` : `  ${c.dim(q.hint ?? KEYS_MULTI)}`,
+      error ? `  ${c.red(error)}` : keysLine(q.hint ?? KEYS_MULTI),
     ];
     return this.ask<T[]>(render, (str, key, done) => {
       error = null;

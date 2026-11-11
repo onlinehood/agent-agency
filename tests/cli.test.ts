@@ -3,7 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import { makeTestApp, ADMIN_TG, type TestApp } from "./helpers.js";
 import { SetupCli, type CliDeps } from "../src/cli/setup.js";
 import { ScriptedPrompter, TtyPrompter, BackSignal, BACK } from "../src/cli/prompt.js";
-import { width, box, stripAnsi, spinner } from "../src/cli/term.js";
+import { width, box, stripAnsi, spinner, welcome, wrapLine, c } from "../src/cli/term.js";
 import { mascot, renderPixels } from "../src/cli/sprites.js";
 import type { SetupNet } from "../src/setup/service.js";
 import type { ControlActions } from "../src/ops/control.js";
@@ -293,6 +293,50 @@ describe("terminal prompts and rendering", () => {
     expect(mascot("none").join("")).not.toContain("\x1b");
     // top and bottom pixels with different colours share one cell (fg + bg)
     expect(renderPixels(["a", "b"], { a: ["#000000", 16], b: ["#ffffff", 231] }, "256")[0]).toBe("\x1b[38;5;16;48;5;231m▀\x1b[0m");
+  });
+});
+
+describe("narrow (phone) terminals", () => {
+  const withColumns = async (n: number, fn: () => void | Promise<void>) => {
+    const prev = process.env.COLUMNS;
+    process.env.COLUMNS = String(n);
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.COLUMNS;
+      else process.env.COLUMNS = prev;
+    }
+  };
+
+  it("banners and boxes never get wider than the screen", async () => {
+    for (const cols of [40, 44, 50, 80]) {
+      await withColumns(cols, () => {
+        const banner = welcome("0.1.0", "설정 — 바꿀 항목을 고르세요", ["↑↓ 이동 · Enter 선택 · Esc 건너뛰기/뒤로 · Ctrl+C 종료"]);
+        for (const l of banner.split("\n")) expect(width(l)).toBeLessThanOrEqual(cols - 2);
+        expect(stripAnsi(banner)).toContain("Ctrl+C 종료");
+        const b = box(["짧은 줄", "아주 긴 안내 문장이 이어집니다. ".repeat(6)]);
+        for (const l of b.split("\n")) expect(width(l)).toBeLessThanOrEqual(cols - 2);
+      });
+    }
+  });
+
+  it("the host width wins over the 80 columns docker exec may report at first", async () => {
+    await withColumns(44, () => {
+      const out: string[] = [];
+      const s = spinner("설치된 AI CLI 확인 중", { isTTY: true, columns: 80, write: (x: string) => (out.push(x), true) } as never);
+      s.stop();
+      for (const frame of out) for (const l of frame.split("\n")) expect(width(l)).toBeLessThanOrEqual(44);
+    });
+  });
+
+  it("wrapping keeps words and colours", () => {
+    const lines = wrapLine(c.dim("하나 둘 셋 넷 다섯 여섯 일곱 여덟"), 12);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const l of lines) {
+      expect(width(l)).toBeLessThanOrEqual(12);
+      expect(l.startsWith("\x1b[2m")).toBe(true); // colour re-applied on every line
+    }
+    expect(lines.map((l) => stripAnsi(l)).join(" ")).toBe("하나 둘 셋 넷 다섯 여섯 일곱 여덟");
   });
 });
 

@@ -8,7 +8,7 @@ import { UNSUPPORTED_CAPS, detectAuthExpired, detectQuota, emptyResult, type Ada
  *
  * Verified CLI surface (cursor-agent 2026.11.05 `--help`, official package from downloads.cursor.com):
  * `-p/--print`, `--output-format json`, `--mode plan` (read-only), `-f/--force`, `--model`,
- * `--resume [chatId]`, `--workspace`, `status --format json`. Only an interactive `cursor-agent login`
+ * `--resume [chatId]`, `--workspace`, `--trust`, `status --format json`. Only an interactive `cursor-agent login`
  * (Cursor subscription) is accepted; `--api-key`/CURSOR_API_KEY is stripped and never used.
  */
 export class CursorCliAdapter implements ExecutorAdapter {
@@ -58,7 +58,10 @@ export class CursorCliAdapter implements ExecutorAdapter {
 
   buildArgs(req: ExecRequest): string[] {
     const prompt = req.systemPrompt ? `${req.systemPrompt}\n\n---\n\n${req.prompt}` : req.prompt;
-    const args = ["-p", "--output-format", "json", "--workspace", "."];
+    // Headless runs cannot answer Cursor's "Workspace Trust Required" prompt. AgentAgency picks the
+    // directory itself (an isolated task workspace or its own data dir), so it trusts that folder.
+    // --trust only marks the folder trusted; it does not auto-approve commands like --force/--yolo.
+    const args = ["-p", "--output-format", "json", "--workspace", ".", "--trust"];
     if (req.mode === "readonly") args.push("--mode", "plan");
     else if (req.isolated) args.push("--force");
     if (req.model && req.model !== "auto") args.push("--model", req.model);
