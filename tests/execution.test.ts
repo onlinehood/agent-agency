@@ -94,6 +94,32 @@ describe("execution policy (PRD §15)", () => {
     expect(c2.some((c) => c.adapter.kind === "paid_api")).toBe(false);
   });
 
+  it("resuming continues the agent's own session, never another agent's, and a vanished session restarts fresh", async () => {
+    let claudeGone = false;
+    app = await makeTestApp({
+      claude: (req) => {
+        if (claudeGone && req.resumeSessionRef) throw new Error(`No conversation found with session ID: ${req.resumeSessionRef}`);
+        return "ok";
+      },
+      codex: () => "ok",
+    });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await app.ctx.repos.projects.create({ ownerId: user.id, name: "S", slug: "s", status: "active" });
+    const task = await app.ctx.repos.tasks.create({ projectId: project.id, title: "q" });
+    const run = (agent: typeof claude, resume: boolean) => app!.orchestrator.runner.run({ agent, task, project, purpose: resume ? "fix" : "implement", prompt: "x", cwd: app!.dataDir, mode: "readonly", resumeSessionRef: resume ? "resume" : null });
+    const impl = await run(claude, false); // implementer (Claude)
+    const review = await run(codex, false); // reviewer (Codex) runs last
+    expect(review.sessionRef).not.toBe(impl.sessionRef);
+    await run(claude, true); // fix: must resume Claude's own session, not the reviewer's
+    expect(app.claude.calls.at(-1)!.resumeSessionRef).toBe(impl.sessionRef);
+    // The saved conversation disappears: one failed resume, then a fresh run that succeeds.
+    claudeGone = true;
+    const n = app.claude.calls.length;
+    const out = await run(claude, true);
+    expect(out.status).toBe("succeeded");
+    expect(app.claude.calls.slice(n).map((r) => r.resumeSessionRef ?? null)).toEqual([impl.sessionRef, null]);
+  });
+
   it("unverified cloud executors are reported honestly and only enabled by a recorded verification", async () => {
     const cloud = new SimulatorAdapter("cc", () => "ok", 0, { kind: "cloud", provider: "openai" });
     app = await makeTestApp({ extraAdapters: [cloud] });
