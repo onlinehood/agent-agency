@@ -1,4 +1,4 @@
-import type { OrganizationMode, OrgRole, Persona, PersonaPreset } from "../types.js";
+import type { BuiltInMode, OrganizationMode, OrgRole, Persona, PersonaPreset } from "../types.js";
 import { modeDef } from "./modes.js";
 
 /**
@@ -33,6 +33,8 @@ export interface DialogueContext {
   ambiguousAudience?: boolean;
   /** Experimental B-style: collaboration style varies per mode (flag gated). */
   styleVariantB?: boolean;
+  /** Task role in the current work (leader, implementer, reviewer, tester), when known. */
+  functionalRole?: string;
 }
 
 export interface StyleSpec {
@@ -49,6 +51,12 @@ export interface StyleSpec {
   collaborationStyle: string | null;
   /** Sentence-ending hint for deterministic templates */
   ending: "습니다" | "요" | "반말";
+  /** How someone in this worldview title talks (e.g. 현장소장, 조교). */
+  roleVoice: string | null;
+  /** How the task role talks (leader, implementer, reviewer, tester). */
+  taskVoice: string | null;
+  /** Speech habits of the persona preset. */
+  personaVoice: string | null;
 }
 
 const PERSONA_TONE: Record<PersonaPreset, string[]> = {
@@ -58,6 +66,43 @@ const PERSONA_TONE: Record<PersonaPreset, string[]> = {
   analytical: ["구조적", "수치와 비교 중심", "담백함"],
   mentor: ["차분한 안내", "맥락 설명", "질문을 되묻는 태도"],
   pragmatic: ["실용적", "핵심만", "트레이드오프 명시"],
+};
+
+/** Speech habits per persona preset — how the character sounds, on top of PERSONA_TONE. */
+const PERSONA_SPEECH: Record<PersonaPreset, string> = {
+  careful: "단정하기 전에 확인한 근거를 밝히고, 확실하지 않은 것은 '확인이 필요합니다'라고 분명히 표시한다.",
+  bold: "문장을 짧게 끊고 결론부터 말한다. 망설이는 표현 대신 '바로 진행하겠습니다'처럼 단호하게 말한다.",
+  friendly: "상대의 수고를 먼저 알아주고 쉬운 말로 설명한다. 감탄사나 이모지는 가끔만 쓴다.",
+  analytical: "항목을 나눠 비교하고 가능한 한 숫자로 말한다. 감정 표현은 줄이고 담백하게 말한다.",
+  mentor: "결론과 함께 '왜' 그런지 이유를 한 줄 덧붙이고, 필요하면 상대가 생각해 볼 질문을 하나 던진다.",
+  pragmatic: "핵심만 짧게 말한다. 선택지가 있으면 장단점을 한 줄씩 붙이고 추천안을 정한다.",
+};
+
+/**
+ * How each worldview title talks. {user}/{moderator}/{member} become the worldview's titles, so a
+ * custom worldview built on a base mode gets the same voice under its own names.
+ */
+const ROLE_VOICE: Record<BuiltInMode, Partial<Record<OrgRole, string>>> = {
+  corporate: {
+    moderator: "{moderator}답게 차분하고 정돈된 말투. 결정 사항·일정·담당자를 깔끔하게 정리하고, {member}들에게는 정중하지만 분명하게 요청한다.",
+    member: "{member}답게 책임감 있는 말투. 맡은 일의 진행·결과·리스크를 근거와 숫자로 보고하고, 다른 {member}에게는 예의를 갖춰 협조를 구한다.",
+  },
+  construction: {
+    moderator: "{moderator}답게 짧고 시원시원하게 지시한다. 오늘 할 공정, 품질·안전 기준, 마감을 분명히 하고, 작업자의 수고를 알아준다. 거친 말이나 욕설은 쓰지 않는다.",
+    member: "{member}답게 소탈하고 시원시원한 말투. '확인했습니다', '바로 들어가겠습니다'처럼 행동 중심으로 말하고, 공정·마감·자재 같은 현장 비유를 가볍게 섞는다(과하지 않게).",
+  },
+  campus: {
+    moderator: "{moderator}답게 친절하고 차분하게 안내한다. 과제 기준과 일정을 정리해 주고, {member}들의 의견을 고르게 모으며, {user}님께는 공손하게 보고한다.",
+    member: "{member}답게 성실하고 의욕 있는 말투. 근거를 들어 의견을 내고, 모르는 것은 솔직하게 질문하며, 조원의 의견을 존중한다.",
+  },
+};
+
+/** How each task role talks in the current work. */
+const TASK_VOICE: Record<string, string> = {
+  leader: "리더로서 목표·우선순위·결정을 먼저 말하고, 누가 무엇을 언제까지 할지 정리한다.",
+  implementer: "구현 담당으로서 무엇을 바꿨고 어떻게 확인했는지(테스트·실행 결과)를 구체적으로 말하고, 남은 일은 솔직하게 밝힌다.",
+  reviewer: "리뷰어로서 근거(파일·위치·재현 방법)를 들어 문제를 짚고 고칠 방향을 제안한다. 잘된 점도 하나는 구체적으로 인정하고, 지적은 사람이 아니라 코드에 대해 한다.",
+  tester: "테스트 담당으로서 재현 절차, 기대 결과와 실제 결과를 나눠서 말한다.",
 };
 
 export const HARD_RULES: string[] = [
@@ -189,7 +234,12 @@ export function resolveStyle(ctx: DialogueContext): StyleSpec {
 
   const ending: StyleSpec["ending"] = formality === "formal" ? "습니다" : formality === "polite" ? "요" : "반말";
 
-  return { formality, addressTerm, selfTerm, tone, humor, rules, collaborationStyle, ending };
+  const voice = ROLE_VOICE[def.baseMode]?.[ctx.speakerRole];
+  const roleVoice = voice ? voice.replace(/\{(user|moderator|member)\}/g, (_, r: OrgRole) => def.titles[r]) : null;
+  const taskVoice = ctx.functionalRole ? (TASK_VOICE[ctx.functionalRole] ?? null) : null;
+  const personaVoice = persona ? PERSONA_SPEECH[persona.preset] : null;
+
+  return { formality, addressTerm, selfTerm, tone, humor, rules, collaborationStyle, ending, roleVoice, taskVoice, personaVoice };
 }
 
 export function addressTermFor(mode: OrganizationMode, speaker: OrgRole, listener: OrgRole, formality: Formality): string {
@@ -223,9 +273,12 @@ export function styleInstructions(ctx: DialogueContext, speakerName: string, lis
   const addr = ctx.ambiguousAudience ? def.teamAddress : s.addressTerm.replace("{name}", listenerName);
   const lines = [
     `[세계관] ${def.labelKo} 모드 (${def.atmosphere}). 당신은 '${speakerName}'(${def.titles[ctx.speakerRole]}) 이고 '${listenerName}'(${def.titles[ctx.listenerRole]})에게 말합니다.`,
-    `[말투] ${formalityKo(s.formality)}. 상대 호칭: "${addr}". 자기 지칭: "${s.selfTerm}". 유머 허용도: ${Math.round(s.humor * 100)}%.`,
+    `[말투] ${formalityKo(s.formality)}. 상대 호칭: "${addr}". 자기 지칭: "${s.selfTerm}". 유머 허용도: ${Math.round(s.humor * 100)}%. 아래 예시 표현도 이 말투(존댓말/반말)에 맞춰 바꿔 쓴다.`,
     `[톤] ${s.tone.join(", ")}.`,
   ];
+  if (s.roleVoice) lines.push(`[직책다운 말투] ${s.roleVoice}`);
+  if (s.taskVoice) lines.push(`[맡은 역할] ${s.taskVoice}`);
+  if (s.personaVoice) lines.push(`[성격다운 말투] ${s.personaVoice}`);
   if (s.collaborationStyle) lines.push(`[협업 스타일] ${s.collaborationStyle}`);
   lines.push(`[규칙] ${s.rules.join(" ")}`);
   return lines.join("\n");

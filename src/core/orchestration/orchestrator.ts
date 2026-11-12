@@ -308,7 +308,7 @@ export class Orchestrator {
     const ctxProject = project && project.workType !== "lounge" ? project : null;
     const lounge = await this.loungeProject(user);
     const task = await this.internalTask(lounge, `대화: ${text.slice(0, 60)}`, "question");
-    const context = ctxProject ? (await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text : await this.loungeContext(user);
+    const context = ctxProject ? `${(await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text}\n\n${await this.teamRoster(user)}` : await this.loungeContext(user);
     const style = await this.comm.styleFor(user, speaker, { kind: "user" }, "report");
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 사용자의 마지막 메시지를 직전 대화와 함께 이해해 의도를 정하고, JSON 하나만 출력하세요.",
@@ -495,7 +495,7 @@ export class Orchestrator {
       return this.moderatorSays(user, project, "지금 응답할 수 있는 AI 실행기가 없어요. 서버에서 aa config → AI 구독(또는 aa doctor)으로 실행기 상태를 확인해 주세요.", "answer.unavailable", "error");
     }
     const ctxProject = project && project.workType !== "lounge" ? project : null;
-    const context = ctxProject ? (await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text : await this.loungeContext(user);
+    const context = ctxProject ? `${(await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text}\n\n${await this.teamRoster(user)}` : await this.loungeContext(user);
     const style = await this.comm.styleFor(user, speaker, { kind: "user" }, "report");
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 아래 맥락을 참고해 질문에 답하세요. 모르면 모른다고 답하고, 실행하지 않은 일을 했다고 말하지 마세요.",
@@ -546,10 +546,25 @@ export class Orchestrator {
     await this.discussion.run({ user, project, task, topic: text, context, agents, maxRounds: 2, cwd: this.ctx.config.dataDir });
   }
 
+  /** Who is on the team and which AI executors work — so "커서도 합류했어?" can be answered. */
+  private async teamRoster(user: User): Promise<string> {
+    const profile = await this.ctx.repos.users.getProfile(user.id);
+    const agents = await this.ctx.repos.agents.listByOwner(user.id);
+    const ex = this.ctx.executors;
+    const agentLines = agents.map((a) => `- ${a.name}: 실행기 ${a.adapterId}${a.id === profile.moderatorAgentId ? ", 진행자" : ""}${a.enabled ? "" : ", 꺼짐"}, ${ex.isUsable(a.adapterId) ? "지금 일할 수 있음" : `지금 일할 수 없음(${ex.usabilityReason(a.adapterId).reason})`}`);
+    const staffed = new Set(agents.map((a) => a.adapterId));
+    const execLines = ex
+      .list()
+      .filter((a) => a.kind !== "paid_api")
+      .map((a) => `- ${a.id}: ${ex.isUsable(a.id) ? "연결·검증됨" : ex.usabilityReason(a.id).reason}${ex.isUsable(a.id) && !staffed.has(a.id) ? " (이 실행기를 쓰는 에이전트는 아직 없음 — 서버에서 aa config → 에이전트 → 에이전트 추가)" : ""}`);
+    return ["## 팀 (에이전트)", ...(agentLines.length ? agentLines : ["- 없음"]), "## AI 실행기 (구독 CLI)", ...execLines].join("\n");
+  }
+
   private async loungeContext(user: User): Promise<string> {
     const projects = (await this.ctx.repos.projects.listByOwner(user.id)).filter((p) => p.workType !== "lounge");
     const ideas = await this.ctx.repos.ideas.list(null);
     return [
+      await this.teamRoster(user),
       "## 마스터 라운지",
       projects.length ? `프로젝트:\n${(await Promise.all(projects.map(async (p) => `- ${p.name} (${projectStatusKo(p.status)}): ${await this.taskBrief(p)}`))).join("\n")}` : "프로젝트 없음",
       ideas.length ? `아이디어 후보: ${ideas.map((i) => i.text).slice(0, 5).join(" / ")}` : "",

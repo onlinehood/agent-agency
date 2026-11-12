@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveFormality, resolveStyle } from "../src/core/organization/dialogue.js";
+import { resolveFormality, resolveStyle, styleInstructions } from "../src/core/organization/dialogue.js";
 import { render, applyEnding } from "../src/core/organization/renderer.js";
 import { MODES } from "../src/core/organization/modes.js";
 
@@ -13,6 +13,31 @@ describe("role-aware dialogue (PRD §2.2)", () => {
     expect(resolveFormality({ mode: "construction", speakerRole: "member", listenerRole: "user", situation: "report" })).toBe("polite");
     expect(resolveFormality({ mode: "construction", speakerRole: "moderator", listenerRole: "member", situation: "instruction" })).toBe("casual");
     expect(resolveFormality({ mode: "construction", speakerRole: "member", listenerRole: "member", situation: "discussion", affinity: 0.4 })).toBe("casual");
+  });
+
+  it("the construction worldview is called 건설현장 with a 현장소장", () => {
+    expect(MODES.construction.labelKo).toBe("건설현장");
+    expect(MODES.construction.titles.moderator).toBe("현장소장");
+    expect(JSON.stringify(MODES)).not.toMatch(/노가다|십장/);
+  });
+
+  it("each title, task role and personality gets its own way of talking", () => {
+    const site = styleInstructions({ mode: "construction", speakerRole: "moderator", listenerRole: "member", situation: "instruction" }, "클로", "덱스");
+    expect(site).toContain("[직책다운 말투] 현장소장답게");
+    expect(site).toContain("욕설은 쓰지 않는다");
+    const ta = resolveStyle({ mode: "campus", speakerRole: "moderator", listenerRole: "user", situation: "report" });
+    expect(ta.roleVoice).toContain("교수님께는 공손하게");
+    const review = styleInstructions(
+      { mode: "corporate", speakerRole: "member", listenerRole: "member", situation: "discussion", functionalRole: "reviewer", persona: { id: "p", preset: "bold", customRules: null, toneBounds: {} } },
+      "클로",
+      "덱스",
+    );
+    expect(review).toContain("[맡은 역할] 리뷰어로서");
+    expect(review).toContain("[성격다운 말투] 문장을 짧게 끊고 결론부터");
+    expect(review).toContain("팀장답게");
+    // No task role known → no task line; the user never gets a voice.
+    expect(styleInstructions({ mode: "corporate", speakerRole: "member", listenerRole: "user", situation: "report" }, "a", "b")).not.toContain("[맡은 역할]");
+    expect(resolveStyle({ mode: "corporate", speakerRole: "user", listenerRole: "member", situation: "instruction" }).roleVoice).toBeNull();
   });
 
   it("uses a safe public register when the audience is ambiguous", () => {

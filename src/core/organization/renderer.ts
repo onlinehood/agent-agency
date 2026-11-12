@@ -69,6 +69,7 @@ export function toDialogueContext(input: Omit<RenderInput, "body" | "machineStat
     persona: input.speaker.persona ?? null,
     ambiguousAudience: input.ambiguousAudience,
     styleVariantB: input.styleVariantB,
+    functionalRole: input.speaker.functionalRole,
   };
 }
 
