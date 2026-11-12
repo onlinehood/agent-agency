@@ -122,6 +122,12 @@ async function main(): Promise<void> {
       const user = (await app.ctx.repos.users.list())[0];
       const r = await verifyExecutor(app.ctx, args[0], { userId: user?.id });
       console.log(r.ok ? `✅ ${r.detail}` : `❌ ${r.detail}`);
+      // This runs in its own process: tell the running service to reload executors and
+      // verification records, or it keeps treating the executor as unverified until a restart.
+      if (r.ok) {
+        const ctl = await httpControlClient(config)({ executors: true }).catch(() => null);
+        if (ctl && !ctl.reached) console.log(c.dim(`  (${ctl.detail})`));
+      }
       await app.stop();
       process.exitCode = r.ok ? 0 : 1;
       return;

@@ -136,6 +136,17 @@ describe("orchestrator", () => {
     expect((await app.ctx.repos.tasks.listByProject(p.id)).map((t) => t.title)).toEqual(["웹 계산기"]);
   });
 
+  it("the AI sees who is on the team and which executors work, so it can say whether an agent joined", async () => {
+    app = await makeTestApp({ claude: () => JSON.stringify({ intent: "answer", reply: "네." }), codex: () => "{}" });
+    await seedUserAndAgents(app);
+    await app.orchestrator.handleMessage(msg("커서도 합류했어?"));
+    const prompt = app.claude.calls.find((r) => r.prompt.includes("사용자 메시지: 커서도 합류했어?"))!.prompt;
+    expect(prompt).toContain("## 팀 (에이전트)");
+    expect(prompt).toMatch(/- 클로드: 실행기 claude-cli/);
+    expect(prompt).toMatch(/- 코덱스: 실행기 codex-cli/);
+    expect(prompt).toContain("## AI 실행기 (구독 CLI)");
+  });
+
   it("a build request in the lounge becomes a task even when the AI tries to do it and reports missing write tools", async () => {
     app = await makeTestApp({
       claude: (req) => (req.prompt.includes("사용자 메시지:") ? "Write/Edit와 Bash 도구 권한이 없어 진행하지 못했습니다. 권한을 열고 다시 지시해 주세요." : "{}"),
