@@ -169,6 +169,13 @@ export class AgentRunner {
   }
 
   private async runOnLocked(adapter: ExecutorAdapter, input: AgentRunInput, project: Project | null): Promise<AgentRunOutput> {
+    // A resumable conversation belongs to one agent on one executor. Asking to resume means
+    // "continue this agent's own last session here" — never another agent's (e.g. the reviewer's
+    // Codex thread handed to the implementer's Claude, which fails with "No conversation found").
+    const sessionKey = `${input.agent.id}:${adapter.id}`;
+    const sessions = ((await this.ctx.repos.tasks.get(input.task.id)).checkpoint.sessions as Record<string, string> | undefined) ?? {};
+    const resumeRef = input.resumeSessionRef ? (sessions[sessionKey] ?? null) : null;
+    input = { ...input, resumeSessionRef: resumeRef };
     const exec = await this.ctx.repos.executions.create({
       taskId: input.task.id,
       agentId: input.agent.id,
@@ -182,15 +189,13 @@ export class AgentRunner {
     await this.ctx.repos.executions.markRunning(exec.id, model);
     await this.ctx.repos.tasks.checkpoint(input.task.id, { lastExecutionId: exec.id, lastAdapterId: adapter.id });
     const policy = await resolveExecutionPolicy(this.ctx.repos, { userId: input.agent.ownerId, projectId: project?.id, agentId: input.agent.id });
-    // Resume only works within the same executor; a fallback starts a fresh session with rebuilt context.
-    const sameAdapter = (await this.ctx.repos.tasks.get(input.task.id)).checkpoint.lastAdapterId === adapter.id;
     const handle = adapter.start({
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
       cwd: input.cwd,
       mode: input.mode,
       model,
-      resumeSessionRef: sameAdapter ? (input.resumeSessionRef ?? null) : null,
+      resumeSessionRef: resumeRef,
       timeoutMs: input.timeoutMs,
       allowWeb: input.allowWeb,
       attachments: this.ctx.executors.getStatus(adapter.id)?.capabilities.imageInput === "supported" ? input.attachments : undefined,
@@ -218,7 +223,14 @@ export class AgentRunner {
       const stored = await this.ctx.files.put("logs", `${exec.id}.log`, `# ${adapter.id} ${input.purpose}\n## status: ${result.status}\n## error\n${result.error ?? ""}\n## output\n${result.text}`);
       logRef = stored.ref;
     } catch {}
-    if (result.sessionRef) await this.ctx.repos.tasks.checkpoint(input.task.id, { lastSessionRef: result.sessionRef });
+    const staleSession = !!resumeRef && result.status === "failed" && STALE_SESSION.test(`${result.error ?? ""} ${result.text}`);
+    if (result.sessionRef || staleSession) {
+      const cur = ((await this.ctx.repos.tasks.get(input.task.id)).checkpoint.sessions as Record<string, string> | undefined) ?? {};
+      const next = { ...cur };
+      if (staleSession) delete next[sessionKey];
+      if (result.sessionRef && !staleSession) next[sessionKey] = result.sessionRef;
+      await this.ctx.repos.tasks.checkpoint(input.task.id, { sessions: next, ...(result.sessionRef && !staleSession ? { lastSessionRef: result.sessionRef } : {}) });
+    }
     await this.ctx.repos.executions.finish(exec.id, { status: result.status, outputSummary: result.text, sessionRef: result.sessionRef, usage: { ...result.usage, usage_source: result.usageSource }, error: result.error, model: result.model, logRef });
     for (const [k, v] of Object.entries(result.usage)) {
       if (typeof v === "number") this.ctx.usage.record({ adapterId: adapter.id, source: k.includes("estimate") || result.usageSource !== "official" ? "estimate" : "official", metric: k, value: v, observedAt: nowIso() });
@@ -235,6 +247,8 @@ export class AgentRunner {
       this.ctx.events.emit("alert", { level: "error", message: `${adapter.displayName}: 인증이 만료되었습니다. 서버에서 공식 로그인으로 갱신해 주세요.`, projectId: input.task.projectId });
     }
     this.ctx.events.emit("execution.updated", { execution: await this.ctx.repos.executions.get(exec.id) });
+    // The saved conversation is gone (CLI data reset, other machine, expired): start fresh once.
+    if (staleSession) return this.runOnLocked(adapter, { ...input, resumeSessionRef: null }, project);
     return { ...result, executionId: exec.id, agent: input.agent, adapterId: adapter.id, attempts: [] };
   }
 
@@ -267,3 +281,6 @@ export class AgentRunner {
     return { attempted: handles.length, cancelled, details };
   }
 }
+
+/** CLI errors meaning the conversation to resume no longer exists. */
+const STALE_SESSION = /(no conversation found|conversation not found|session not found|no session found|unknown session|could not find (?:the )?(?:session|thread|conversation)|thread not found|no such (?:session|thread))/i;
