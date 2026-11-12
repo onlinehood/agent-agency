@@ -36,6 +36,7 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     expect(task!.attempts).toBe(1); // no extra fix rounds
     // The review prompt tells the reviewer not to reject only because it could not run commands.
     expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("명령을 직접 실행하지 못했더라도 그것만으로 반려하지 마세요");
+    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("코드로 충족할 수 없는 절차 항목");
   }, 120_000);
 
   it("runs plan → implement → gate → review → PR → merge with approval", async () => {
