@@ -16,6 +16,28 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("a review that rejects with only minor points (e.g. 'another agent must verify') does not loop the fix step", async () => {
+    const base = codingHandler();
+    const picky = (req: { prompt: string }) =>
+      req.prompt.includes("코드 리뷰어")
+        ? JSON.stringify({ approved: false, summary: "독립 검증 미완료", issues: [{ severity: "minor", description: "다른 에이전트의 독립 실행 검증 기록이 없습니다" }], message: "검증 기록만 남겨 주세요." })
+        : base(req as never);
+    app = await makeTestApp({ claude: picky as never, codex: picky as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.checkpoint.reviewVerdict?.approved).toBe(true);
+    expect(task!.prRef).toContain("/pull/1");
+    expect(task!.attempts).toBe(1); // no extra fix rounds
+    // The review prompt tells the reviewer not to reject only because it could not run commands.
+    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("명령을 직접 실행하지 못했더라도 그것만으로 반려하지 마세요");
+  }, 120_000);
+
   it("runs plan → implement → gate → review → PR → merge with approval", async () => {
     const h = codingHandler();
     app = await makeTestApp({ claude: h, codex: h });

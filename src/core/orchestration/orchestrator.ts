@@ -20,7 +20,7 @@ import { extractJson, asStringArray } from "./llmJson.js";
 import { approvalButtons, approvalCard, FEEDBACK_ACTIONS } from "../approvals/card.js";
 import { ACTION_POLICIES } from "../approvals/policy.js";
 import { AppError } from "../../util/errors.js";
-import { describePolicy, resolveExecutionPolicy, setExecutionPolicy } from "../execution/policy.js";
+import { codexEnvironmentFor, describePolicy, resolveExecutionPolicy, setCodexEnvironmentFor, setExecutionPolicy } from "../execution/policy.js";
 import { FLAG_DEFAULTS } from "../flags/index.js";
 import { syncExecutorFlags } from "../../executors/flags.js";
 import type { ExecutorKind } from "../../executors/types.js";
@@ -1332,11 +1332,18 @@ export class Orchestrator {
       await setExecutionPolicy(this.ctx.repos, scope, scopeId, { priority: kinds });
     } else if (sub === "fallback" && (val === "on" || val === "off")) {
       await setExecutionPolicy(this.ctx.repos, scope, scopeId, { autoFallback: val === "on" });
+    } else if (sub === "cloud") {
+      // Codex Cloud environments belong to one repository, so they are set per project.
+      if (!project) return "Codex Cloud 환경 ID는 프로젝트마다 다릅니다. 해당 프로젝트 Topic에서 /exec cloud <환경 ID> 로 넣어 주세요.";
+      if (!val) return `[${project.name}] Codex Cloud 환경: ${(await codexEnvironmentFor(this.ctx.repos, project.id)) ?? "없음 (로컬 CLI로 실행)"}\n설정: /exec cloud <환경 ID> · 해제: /exec cloud off`;
+      if (!project.repoRef) return "GitHub 저장소가 연결된 프로젝트만 Codex Cloud를 쓸 수 있어요.";
+      await setCodexEnvironmentFor(this.ctx.repos, project.id, val === "off" ? null : val);
     } else if (sub) {
-      return "사용법: /exec [priority cloud,local_cli | fallback on|off]";
+      return "사용법: /exec [priority cloud,local_cli | fallback on|off | cloud <Codex 환경 ID>|off]";
     }
     const p = await resolveExecutionPolicy(this.ctx.repos, { userId: user.id, projectId: project?.id });
-    return `${project ? `[${project.name}] ` : ""}${describePolicy(p)}`;
+    const env = project ? await codexEnvironmentFor(this.ctx.repos, project.id) : null;
+    return `${project ? `[${project.name}] ` : ""}${describePolicy(p)}${project ? `\nCodex Cloud 환경: ${env ?? "없음 — 이 프로젝트는 로컬 CLI로 실행 (/exec cloud <환경 ID>)"}` : ""}`;
   }
 
   /* ---------------------------------------------- scheduling helpers */
@@ -1364,7 +1371,7 @@ export const HELP_TEXT = [
   "/moderator <이름> — 진행자 AI 지정",
   "/new <설명>, /new research <주제>, /import owner/repo — 프로젝트 제안/가져오기",
   "/pause /resume /cancel /priority /complete /archive /restore /delete — 프로젝트 Topic 제어",
-  "/exec — 실행 우선순위(Cloud→Local)·자동 전환",
+  "/exec — 실행 우선순위(Cloud→Local)·자동 전환 · /exec cloud <환경 ID> 로 프로젝트별 Codex Cloud 환경",
   "/executors — 실행기 연결·지원 상태",
   "/ideas, /flags, /flag <key> on|off",
 ].join("\n");

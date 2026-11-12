@@ -4,7 +4,7 @@ import type { ExecMode, ExecResult, ExecutorAdapter, RunningHandle } from "../..
 import type { Sandbox } from "../../workspace/sandbox.js";
 import { nowIso } from "../../util/ids.js";
 import { maskKnown } from "../../security/masking.js";
-import { executorCandidates, resolveExecutionPolicy, type Candidate } from "../execution/policy.js";
+import { codexEnvironmentFor, executorCandidates, resolveExecutionPolicy, type Candidate } from "../execution/policy.js";
 
 export interface AgentRunInput {
   agent: Agent;
@@ -120,9 +120,14 @@ export class AgentRunner {
     const attempts: AgentRunOutput["attempts"] = [];
     let last: AgentRunOutput | null = null;
 
+    const codexEnv = await codexEnvironmentFor(this.ctx.repos, project?.id);
     for (const c of candidates) {
       if (!c.usable) {
         attempts.push({ adapterId: c.adapter.id, status: "skipped", reason: c.reason });
+        continue;
+      }
+      if (c.adapter.id === "codex-cloud" && !codexEnv) {
+        attempts.push({ adapterId: c.adapter.id, status: "skipped", reason: "이 프로젝트에 Codex Cloud 환경 ID가 없음 (프로젝트 Topic에서 /exec cloud <환경ID>)" });
         continue;
       }
       if (c.requiresApproval) {
@@ -188,7 +193,6 @@ export class AgentRunner {
     const model = this.ctx.executors.resolveModel(adapter.id, input.agent.modelPolicy);
     await this.ctx.repos.executions.markRunning(exec.id, model);
     await this.ctx.repos.tasks.checkpoint(input.task.id, { lastExecutionId: exec.id, lastAdapterId: adapter.id });
-    const policy = await resolveExecutionPolicy(this.ctx.repos, { userId: input.agent.ownerId, projectId: project?.id, agentId: input.agent.id });
     const handle = adapter.start({
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
@@ -204,7 +208,7 @@ export class AgentRunner {
       onExternalRef: async (ref) => {
         await this.ctx.repos.executions.setExternalRef(exec.id, ref);
       },
-      cloud: { environmentId: policy.cloud.codexEnvironmentId, branch: input.task.branch ?? undefined },
+      cloud: { environmentId: (await codexEnvironmentFor(this.ctx.repos, project?.id)) ?? undefined, branch: input.task.branch ?? undefined },
     });
     const set = this.running.get(input.task.id) ?? new Set();
     set.add(handle);

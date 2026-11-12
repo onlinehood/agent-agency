@@ -5,7 +5,7 @@ import type { PersonaPreset, Provider } from "../core/types.js";
 import { diagnoseTelegram, detectTelegramChats } from "../telegram/gateway.js";
 import { OctokitGitHubService } from "../github/client.js";
 import { GitHubAppTokenProvider } from "../github/appAuth.js";
-import { setExecutionPolicy } from "../core/execution/policy.js";
+import { setCodexEnvironmentFor, setExecutionPolicy } from "../core/execution/policy.js";
 import { isOrganizationMode, modeDef } from "../core/organization/modes.js";
 import { verifyExecutor } from "../executors/verify.js";
 
@@ -137,9 +137,9 @@ export class SetupService {
     return verifyExecutor(this.ctx, adapterId, { userId: (await this.primaryUser())?.id });
   }
 
-  async setCodexEnvironment(env: string) {
-    const u = await this.primaryUser();
-    if (u) await setExecutionPolicy(this.ctx.repos, "user", u.id, { cloud: { codexEnvironmentId: env || undefined } });
+  /** Codex Cloud environment for one project (an environment is tied to one repository). */
+  async setCodexEnvironment(projectId: string, env: string) {
+    await setCodexEnvironmentFor(this.ctx.repos, projectId, env || null);
   }
 
   /* ------------------------------------------------ GitHub */

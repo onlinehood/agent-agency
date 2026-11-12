@@ -373,8 +373,11 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         const issues: ReviewVerdict["issues"] = (rj?.issues ?? [])
           .filter((i) => i && typeof i.description === "string")
           .map((i) => ({ severity: (["blocker", "major", "minor"].includes(String(i.severity)) ? i.severity : "major") as "blocker" | "major" | "minor", description: String(i.description), file: i.file }));
-        // Unparseable reviews never count as approval.
-        const approved = !!rj && !!rj.approved && !issues.some((i) => i.severity === "blocker");
+        // Unparseable reviews never count as approval. Only real defects (major/blocker) can hold a
+        // change back: a rejection that lists nothing but minor points is treated as approval, so
+        // nitpicks or "please verify again" cannot loop the fix step until the retry limit.
+        const blocking = issues.some((i) => i.severity === "blocker" || i.severity === "major");
+        const approved = !!rj && !issues.some((i) => i.severity === "blocker") && (!!rj.approved || (issues.length > 0 && !blocking));
         const verdict: ReviewVerdict = { reviewerAgentId: out.agent.id, approved, summary: rj?.summary ?? "리뷰 결과를 구조화하지 못했습니다.", issues };
         if (out.agent.id !== implementer.id && (await ctx.flags.isEnabled("relationships.evolve", env.user.id))) {
           await ctx.repos.relationships.recordInteraction(env.user.id, out.agent.id, implementer.id, approved ? "positive" : "neutral", `${task.title} 리뷰 ${approved ? "승인" : "수정 요청"}`);

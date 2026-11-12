@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AppContext } from "../core/context.js";
 import type { VerificationRecord } from "./registry.js";
-import { resolveExecutionPolicy } from "../core/execution/policy.js";
+import { anyCodexEnvironment } from "../core/execution/policy.js";
 
 const TOKEN = "AGENT_AGENCY_OK";
 
@@ -21,7 +21,7 @@ export async function verifyExecutor(ctx: AppContext, adapterId: string, opts: {
   if (!status.installed) return { ok: false, detail: `미설치: ${status.notes.join(" ")}` };
   if (!status.authenticated || !status.subscriptionAuth) return { ok: false, detail: `공식 구독 인증 필요: ${status.authDetail}` };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aa-verify-"));
-  const policy = opts.userId ? await resolveExecutionPolicy(ctx.repos, { userId: opts.userId }) : null;
+  const codexEnv = opts.userId ? await anyCodexEnvironment(ctx.repos, opts.userId) : null;
   const externalRefs: string[] = [];
   const started = Date.now();
   const h = adapter.start({
@@ -33,7 +33,7 @@ export async function verifyExecutor(ctx: AppContext, adapterId: string, opts: {
     onExternalRef: (r) => {
       externalRefs.push(r);
     },
-    cloud: { environmentId: policy?.cloud.codexEnvironmentId },
+    cloud: { environmentId: codexEnv ?? undefined },
   });
   const r = await h.result;
   fs.rmSync(dir, { recursive: true, force: true });

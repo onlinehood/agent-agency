@@ -11,7 +11,7 @@ import type { ControlClient } from "../ops/control.js";
 import { runDiagnostics, type Check } from "../ops/diagnostics.js";
 import { allModes, customModes, modeDef, ALL_MODES } from "../core/organization/modes.js";
 import { saveCustomMode, deleteCustomMode } from "../core/organization/customModes.js";
-import { describePolicy, resolveExecutionPolicy, setExecutionPolicy } from "../core/execution/policy.js";
+import { codexEnvironmentFor, describePolicy, resolveExecutionPolicy, setExecutionPolicy } from "../core/execution/policy.js";
 import { FLAG_DEFAULTS } from "../core/flags/index.js";
 import { syncExecutorFlags } from "../executors/flags.js";
 import { retentionPolicy } from "../ops/maintenance.js";
@@ -333,6 +333,26 @@ export class SetupCli {
     }
   }
 
+  /** Codex Cloud environment per project: an environment belongs to one GitHub repository. */
+  async codexEnvironmentFlow(): Promise<void> {
+    const user = await this.svc.primaryUser();
+    if (!user) return;
+    const projects = (await this.ctx.repos.projects.listByOwner(user.id)).filter((p) => p.workType !== "lounge" && p.repoRef);
+    if (!projects.length) return this.note("Codex Cloud(선택): GitHub 저장소가 있는 프로젝트가 생기면 프로젝트별로 환경 ID를 넣을 수 있어요.");
+    this.note("Codex Cloud(선택, 실험 기능): 환경은 저장소 하나에 묶여 있어서 프로젝트마다 따로 넣어요. 환경이 없는 프로젝트는 로컬 CLI로 돌아요.");
+    for (;;) {
+      const options = await Promise.all(
+        projects.map(async (p) => ({ value: p.id, label: p.name, hint: `${p.repoRef} · ${(await codexEnvironmentFor(this.ctx.repos, p.id)) ?? "환경 없음"}` })),
+      );
+      const pick = await this.p.select<string>({ message: "Codex Cloud 환경을 넣을 프로젝트", options: [...options, { value: "__done", label: "완료" }] });
+      if (pick === "__done") return;
+      const cur = await codexEnvironmentFor(this.ctx.repos, pick);
+      const env = await this.p.text({ message: "Codex Cloud 환경 ID (비우면 이 프로젝트는 클라우드 안 씀)", initial: cur ?? "", placeholder: "Codex 웹 → 설정 → 환경의 ID" });
+      await this.svc.setCodexEnvironment(pick, env);
+      this.ok(env ? "저장했어요. 처음이면 aa verify codex-cloud 로 검증하세요." : "이 프로젝트는 클라우드를 쓰지 않아요.");
+    }
+  }
+
   /* ------------------------------------------------ GitHub */
 
   async githubFlow(): Promise<void> {
@@ -533,12 +553,7 @@ export class SetupCli {
       case "executors":
         this.line(stepLine("AI 구독"));
         await this.executorsFlow();
-        if (this.ctx.executors.get("codex-cloud")) {
-          const user = await this.svc.primaryUser();
-          const pol = user ? await resolveExecutionPolicy(this.ctx.repos, { userId: user.id }) : null;
-          const env = await this.p.text({ message: "Codex Cloud 환경 ID (선택, 실험 기능 · 비우면 사용 안 함)", initial: pol?.cloud.codexEnvironmentId ?? "", placeholder: "env_..." });
-          await this.svc.setCodexEnvironment(env);
-        }
+        if (this.ctx.executors.get("codex-cloud")) await this.codexEnvironmentFlow();
         return;
       case "github":
         this.line(stepLine("GitHub"));

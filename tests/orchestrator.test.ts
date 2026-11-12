@@ -191,6 +191,21 @@ describe("orchestrator", () => {
     expect(await app.orchestrator.resumeActivationsOnStart()).toEqual([]);
   });
 
+  it("/exec cloud sets a Codex Cloud environment for the project in that topic only", async () => {
+    app = await makeTestApp();
+    const { user } = await seedUserAndAgents(app);
+    const created = await app.ctx.repos.projects.create({ ownerId: user.id, name: "simple-calc", slug: "simple-calc", status: "active", repoRef: "tester/simple-calc" });
+    const p = await app.ctx.repos.projects.update(created.id, { chatId: "-100123", topicId: 77 });
+    await app.orchestrator.handleMessage(msg("/exec cloud env-x"));
+    expect(app.out.allText()).toContain("해당 프로젝트 Topic에서");
+    await app.orchestrator.handleMessage(msg("/exec cloud env-calc", { topicId: 77 }));
+    const { codexEnvironmentFor } = await import("../src/core/execution/policy.js");
+    expect(await codexEnvironmentFor(app.ctx.repos, p.id)).toBe("env-calc");
+    expect(app.out.allText()).toContain("Codex Cloud 환경: env-calc");
+    await app.orchestrator.handleMessage(msg("/exec cloud off", { topicId: 77 }));
+    expect(await codexEnvironmentFor(app.ctx.repos, p.id)).toBeNull();
+  });
+
   it("imports an existing repository read-only and links it only after approval", async () => {
     app = await makeTestApp({ claude: codingHandler(), codex: codingHandler() });
     const { user } = await seedUserAndAgents(app);
