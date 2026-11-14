@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { resolveFormality, resolveStyle, styleInstructions } from "../src/core/organization/dialogue.js";
 import { render, applyEnding } from "../src/core/organization/renderer.js";
-import { MODES } from "../src/core/organization/modes.js";
+import { MODES, PRESET_MODES, allModes, modeDef, resolveModeArg } from "../src/core/organization/modes.js";
+import { autopilotIntent, autopilotCovers } from "../src/core/approvals/autopilot.js";
 
 describe("role-aware dialogue (PRD §2.2)", () => {
   it("matches the relationship matrix", () => {
@@ -79,5 +80,39 @@ describe("role-aware dialogue (PRD §2.2)", () => {
     expect(applyEnding("끝냈어요.", "반말")).toBe("끝냈어요."); // unknown form untouched
     expect(applyEnding("완료했어요.", "반말")).toBe("완료했어.");
     expect(applyEnding("완료했습니다", "요")).toBe("완료했어요");
+  });
+
+  it("recognises 자동 진행 requests without catching feature requests or risky actions", () => {
+    expect(autopilotIntent("자동으로 진행해")).toBe("on");
+    expect(autopilotIntent("끝까지 알아서 해줘")).toBe("on");
+    expect(autopilotIntent("승인 없이 진행해")).toBe("on");
+    expect(autopilotIntent("자동 승인 꺼줘")).toBe("off");
+    expect(autopilotIntent("단계마다 확인해줘")).toBe("off");
+    expect(autopilotIntent("자동 승인 기능 추가해줘")).toBeNull();
+    expect(autopilotIntent("로그인 화면 만들어줘")).toBeNull();
+    expect(autopilotCovers("pr_merge")).toBe(true);
+    for (const risky of ["deploy_production", "prod_db_change", "permanent_delete", "destructive_operation", "paid_api_usage", "cost_increase", "security_change", "upgrade"] as const) expect(autopilotCovers(risky)).toBe(false);
+  });
+
+  it("every line is asked to be short, with the worldview's own flavour", () => {
+    const site = styleInstructions({ mode: "construction", speakerRole: "member", listenerRole: "user", situation: "report" }, "덱스", "건물주");
+    expect(site).toContain("[길이] 기본 1~3문장");
+    expect(site).toContain("[말맛] 현장 무전처럼 짧게");
+  });
+
+  it("ready-made fun worldviews: kitchen, mission control, guild", () => {
+    expect(Object.keys(PRESET_MODES)).toEqual(["preset:kitchen", "preset:mission", "preset:guild"]);
+    for (const m of Object.keys(PRESET_MODES)) expect(allModes()).toContain(m);
+    expect(resolveModeArg("주방")).toBe("preset:kitchen");
+    expect(resolveModeArg("kitchen")).toBe("preset:kitchen");
+    expect(resolveModeArg("우주 관제센터")).toBe("preset:mission");
+    expect(resolveModeArg("길드")).toBe("preset:guild");
+    expect(resolveModeArg("건설현장")).toBe("construction");
+    const chef = styleInstructions({ mode: "preset:kitchen", speakerRole: "moderator", listenerRole: "member", situation: "instruction" }, "클로", "덱스");
+    expect(chef).toContain("헤드셰프답게");
+    expect(chef).toContain("예스 셰프");
+    expect(modeDef("preset:mission").titles).toEqual({ user: "사령관", moderator: "관제실장", member: "승무원" });
+    // Presets inherit a base register matrix: mission control talks to the 사령관 formally.
+    expect(resolveFormality({ mode: "preset:mission", speakerRole: "member", listenerRole: "user", situation: "report" })).toBe("formal");
   });
 });

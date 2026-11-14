@@ -26,7 +26,7 @@ export function progressText(project: Project, allTasks: Task[], agents: Map<str
   const current = tasks.find((t) => ["planning", "in_progress", "review"].includes(t.state)) ?? tasks.find((t) => ["awaiting_approval", "pr_open", "blocked"].includes(t.state));
   const recentDone = tasks.filter((t) => t.state === "done").sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""))[0];
   const lines: string[] = [];
-  lines.push(`📌 ${project.name} — ${projectStatusKo(project.status)}`);
+  lines.push(`📌 ${project.name} — ${projectStatusKo(project.status)}${project.settings?.autopilot ? " · 🤖 자동 진행" : ""}`);
   if (current) {
     const idx = STAGES.indexOf(current.stage);
     const bar = STAGES.slice(0, 6)

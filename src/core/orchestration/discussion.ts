@@ -75,7 +75,7 @@ export class Discussion {
           transcript ? `\n지금까지의 의견:\n${transcript}` : "",
           `\n${protocol.instruction(round, agentIndex)}`,
           `\n${await this.comm.styleFor(input.user, agent, listener, "discussion")}`,
-          `\n반드시 다음 JSON만 출력: {"position": "핵심 입장(기술적 사실, ${protocol.positionLength})", "agree": true|false, "message": "동료에게 하는 캐릭터 대사(위 말투 규칙 적용, 2~4문장)"}`,
+          `\n반드시 다음 JSON만 출력: {"position": "핵심 입장(기술적 사실, ${protocol.positionLength})", "agree": true|false, "message": "동료에게 하는 캐릭터 대사(위 말투 규칙 적용, 1~3문장)"}`,
         ].join("\n");
         const out = await this.runner.run({ agent, task: input.task, project: input.project, purpose: "discuss", prompt, cwd: input.cwd, mode: "readonly", kinds: ["local_cli", "paid_api"], timeoutMs: 5 * 60_000 });
         if (out.status !== "succeeded") {
