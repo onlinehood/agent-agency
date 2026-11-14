@@ -508,7 +508,15 @@ aa cursor
 
 로그인이 끝나면 실제로 짧은 읽기 전용 요청을 보내 동작을 확인합니다. 통과한 실행기만 작업에 쓰입니다. 실패하면 이유를 보여 주고 다시 로그인할지 묻습니다.
 
-Codex Cloud(선택, 실험 기능)의 환경 ID는 `aa config` → AI 구독 에서 넣습니다.
+**Codex Cloud (선택, 실험 기능)**
+
+Codex 작업을 이 서버가 아니라 OpenAI 클라우드에서 돌립니다. RAM이 작은 서버라면 부담이 크게 줄어듭니다.
+
+1. chatgpt.com/codex에서 환경(Environment)을 만들고 프로젝트의 GitHub 저장소를 연결합니다. 환경은 저장소 하나에 묶이므로 프로젝트마다 하나씩 만듭니다.
+2. 환경 ID를 그 프로젝트에 넣습니다. 프로젝트 Topic에서 `/exec cloud <환경 ID>`를 보내거나, 서버에서 `aa config` → AI 구독에서 프로젝트를 골라 넣습니다. ID는 Codex 웹의 설정 → 환경에서 해당 환경을 열면 주소 끝에 있고, 서버에서 `docker compose exec -it app codex cloud`로도 볼 수 있습니다.
+3. 처음 한 번 `aa verify codex-cloud`로 검증합니다.
+
+환경 ID가 없는 프로젝트는 로컬 CLI로 돕니다. 다른 프로젝트의 환경을 빌려 쓰지 않습니다. `/exec`를 프로젝트 Topic에서 보내면 그 프로젝트의 환경이 보입니다.
 
 ### 5.4 GitHub 연결
 

@@ -99,3 +99,31 @@ export function describePolicy(p: ExecutionPolicy): string {
     `종량제 유료 API: ${p.paidApi.enabled ? "허용(매 사용 시 명시적 승인 필요)" : "비활성"}`,
   ].join("\n");
 }
+
+/* ------------------------------------------------ Codex Cloud environment per project */
+
+const CODEX_ENV_KEY = "codex.cloud_environment";
+
+/**
+ * A Codex Cloud environment is tied to one repository, so the ID is kept per project. Cloud runs
+ * only use the project's own environment — never a shared one that may point at another repo.
+ */
+export async function codexEnvironmentFor(repos: Repos, projectId: string | null | undefined): Promise<string | null> {
+  if (!projectId) return null;
+  const v = await repos.settings.get<string>("project", projectId, CODEX_ENV_KEY);
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+export async function setCodexEnvironmentFor(repos: Repos, projectId: string, env: string | null): Promise<void> {
+  await repos.settings.set("project", projectId, CODEX_ENV_KEY, env?.trim() ? env.trim() : null);
+}
+
+/** Any environment the user has set (for the one-off verification run). */
+export async function anyCodexEnvironment(repos: Repos, userId: string): Promise<string | null> {
+  for (const p of await repos.projects.listByOwner(userId)) {
+    const env = await codexEnvironmentFor(repos, p.id);
+    if (env) return env;
+  }
+  const legacy = (await resolveExecutionPolicy(repos, { userId })).cloud.codexEnvironmentId;
+  return legacy?.trim() ? legacy.trim() : null;
+}

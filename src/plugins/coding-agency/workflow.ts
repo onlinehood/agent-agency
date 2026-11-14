@@ -8,6 +8,7 @@ import { budgetFor } from "../../core/usage/budget.js";
 import { reportCardText } from "../../core/orchestration/progress.js";
 import { ACTION_POLICIES, type ApprovalMode } from "../../core/approvals/policy.js";
 import { approvalButtons, approvalCard } from "../../core/approvals/card.js";
+import { AUTOPILOT_BUDGET_EXTENSIONS, autopilotCovers } from "../../core/approvals/autopilot.js";
 import { captureScreenshot, previewUrlFor } from "./preview.js";
 import { scanDiff, scanFiles, describeFindings } from "../../security/secretScan.js";
 import { applyBaseline } from "../../quality/baseline.js";
@@ -105,6 +106,30 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
   }
 
   protected async requestApproval(env: WorkflowEnv, task: Task, action: Approval["action"], summary: string, scope: Record<string, unknown> = {}, speaker?: Agent | null): Promise<TaskOutcome> {
+    // 자동 진행: grant routine checkpoints at once and keep going (risky actions still ask).
+    const project = await env.ctx.repos.projects.get(env.project.id);
+    let capNote = "";
+    if (project.settings.autopilot && autopilotCovers(action)) {
+      const used = Number(task.checkpoint.autoExtensions ?? 0);
+      if (action !== "budget_exceed" || used < AUTOPILOT_BUDGET_EXTENSIONS) {
+        const req = await env.ctx.approvals.request({ actorId: env.user.id, projectId: project.id, taskId: task.id, action, summary, scope });
+        const granted = await env.ctx.repos.approvals.setStatus(req.id, "approved", "autopilot");
+        await env.ctx.repos.audit.record("autopilot", "approval.auto_approved", `approval:${req.id}`, "success", { action, taskId: task.id, projectId: project.id });
+        const t = action === "budget_exceed" ? await env.ctx.repos.tasks.checkpoint(task.id, { autoExtensions: used + 1 }) : task;
+        await env.comm.say({
+          user: env.user,
+          project,
+          speaker: { kind: "system" },
+          listener: { kind: "user" },
+          situation: "report",
+          body: `🤖 자동 진행 — ${ACTION_POLICIES[action].labelKo}${action === "budget_exceed" ? ` (${used + 1}/${AUTOPILOT_BUDGET_EXTENSIONS})` : ""}: ${summary.split("\n")[0]!.slice(0, 120)}`,
+          machineState: { kind: "approval.auto", taskId: task.id, projectId: project.id, data: { approvalId: req.id, action } },
+        });
+        return (await this.onApprovalDecided({ ...env, project }, t, granted)) ?? { kind: "requeue" };
+      }
+      capNote = `\n\n🤖 자동 진행은 예산을 ${AUTOPILOT_BUDGET_EXTENSIONS}번까지만 늘려요. 같은 문제가 반복되는 것 같아 확인을 요청드려요.`;
+    }
+    summary += capNote;
     const approval = await env.ctx.approvals.request({ actorId: env.user.id, projectId: env.project.id, taskId: task.id, action, summary, scope });
     await this.setState(env, task, { state: "awaiting_approval", checkpoint: { pendingApprovalId: approval.id } });
     await env.comm.say({
@@ -373,8 +398,11 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         const issues: ReviewVerdict["issues"] = (rj?.issues ?? [])
           .filter((i) => i && typeof i.description === "string")
           .map((i) => ({ severity: (["blocker", "major", "minor"].includes(String(i.severity)) ? i.severity : "major") as "blocker" | "major" | "minor", description: String(i.description), file: i.file }));
-        // Unparseable reviews never count as approval.
-        const approved = !!rj && !!rj.approved && !issues.some((i) => i.severity === "blocker");
+        // Unparseable reviews never count as approval. Only real defects (major/blocker) can hold a
+        // change back: a rejection that lists nothing but minor points is treated as approval, so
+        // nitpicks or "please verify again" cannot loop the fix step until the retry limit.
+        const blocking = issues.some((i) => i.severity === "blocker" || i.severity === "major");
+        const approved = !!rj && !issues.some((i) => i.severity === "blocker") && (!!rj.approved || (issues.length > 0 && !blocking));
         const verdict: ReviewVerdict = { reviewerAgentId: out.agent.id, approved, summary: rj?.summary ?? "리뷰 결과를 구조화하지 못했습니다.", issues };
         if (out.agent.id !== implementer.id && (await ctx.flags.isEnabled("relationships.evolve", env.user.id))) {
           await ctx.repos.relationships.recordInteraction(env.user.id, out.agent.id, implementer.id, approved ? "positive" : "neutral", `${task.title} 리뷰 ${approved ? "승인" : "수정 요청"}`);

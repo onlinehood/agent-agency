@@ -234,7 +234,7 @@ export function resolveStyle(ctx: DialogueContext): StyleSpec {
 
   const ending: StyleSpec["ending"] = formality === "formal" ? "습니다" : formality === "polite" ? "요" : "반말";
 
-  const voice = ROLE_VOICE[def.baseMode]?.[ctx.speakerRole];
+  const voice = def.voice?.[ctx.speakerRole] ?? ROLE_VOICE[def.baseMode]?.[ctx.speakerRole];
   const roleVoice = voice ? voice.replace(/\{(user|moderator|member)\}/g, (_, r: OrgRole) => def.titles[r]) : null;
   const taskVoice = ctx.functionalRole ? (TASK_VOICE[ctx.functionalRole] ?? null) : null;
   const personaVoice = persona ? PERSONA_SPEECH[persona.preset] : null;
@@ -275,7 +275,9 @@ export function styleInstructions(ctx: DialogueContext, speakerName: string, lis
     `[세계관] ${def.labelKo} 모드 (${def.atmosphere}). 당신은 '${speakerName}'(${def.titles[ctx.speakerRole]}) 이고 '${listenerName}'(${def.titles[ctx.listenerRole]})에게 말합니다.`,
     `[말투] ${formalityKo(s.formality)}. 상대 호칭: "${addr}". 자기 지칭: "${s.selfTerm}". 유머 허용도: ${Math.round(s.humor * 100)}%. 아래 예시 표현도 이 말투(존댓말/반말)에 맞춰 바꿔 쓴다.`,
     `[톤] ${s.tone.join(", ")}.`,
+    `[길이] 기본 1~3문장. 인사·감사·사과·맺음말 같은 사족은 빼고 결론부터 말한다. 목록이 꼭 필요하면 3줄 이내.`,
   ];
+  if (def.flavor) lines.push(`[말맛] ${def.flavor} 비유는 한 번이면 충분하고, 사실·숫자는 비유로 흐리지 않는다.`);
   if (s.roleVoice) lines.push(`[직책다운 말투] ${s.roleVoice}`);
   if (s.taskVoice) lines.push(`[맡은 역할] ${s.taskVoice}`);
   if (s.personaVoice) lines.push(`[성격다운 말투] ${s.personaVoice}`);

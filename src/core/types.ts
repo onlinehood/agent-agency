@@ -5,8 +5,8 @@
 
 export type BuiltInMode = "corporate" | "construction" | "campus";
 
-/** Built-in worldview, or a user-defined one ("custom:<slug>", Phase 4). */
-export type OrganizationMode = BuiltInMode | `custom:${string}`;
+/** Built-in worldview, a ready-made preset ("preset:<slug>"), or a user-defined one ("custom:<slug>"). */
+export type OrganizationMode = BuiltInMode | `custom:${string}` | `preset:${string}`;
 
 /** Organization (worldview) roles — expression layer only. */
 export type OrgRole = "user" | "moderator" | "member";
@@ -90,6 +90,8 @@ export interface Project {
 
 export interface ProjectSettings {
   approvalMode?: "default" | "strict" | "auto_within_scope";
+  /** 자동 진행: routine approvals are granted automatically (risky ones still ask). */
+  autopilot?: boolean;
   previewUrl?: string;
   testCommand?: string;
   lintCommand?: string;

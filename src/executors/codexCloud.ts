@@ -93,7 +93,7 @@ export class CodexCloudAdapter implements ExecutorAdapter {
     const started = Date.now();
     const env = minimalEnv(req.env ?? {}, this.passthroughEnv);
     const result = (async (): Promise<ExecResult> => {
-      if (!req.cloud?.environmentId) return emptyResult({ error: "Codex Cloud 환경 ID가 설정되지 않았습니다 (execution.cloud.codexEnvironmentId)." });
+      if (!req.cloud?.environmentId) return emptyResult({ error: "이 프로젝트에 Codex Cloud 환경 ID가 없습니다 (프로젝트 Topic에서 /exec cloud <환경 ID>)." });
       const prompt = req.systemPrompt ? `${req.systemPrompt}\n\n---\n\n${req.prompt}` : req.prompt;
       const args = ["cloud", "exec", "--env", req.cloud.environmentId];
       if (req.cloud.branch) args.push("--branch", req.cloud.branch);

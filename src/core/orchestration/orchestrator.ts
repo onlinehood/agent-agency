@@ -13,14 +13,15 @@ import { APP_VERSION } from "../../version.js";
 import path from "node:path";
 import { classify, detectWorkType, slugify, type Classified } from "./classifier.js";
 import { isInternal, progressText, projectStatusKo, statusSummary } from "./progress.js";
-import { allModes, modeDef, isOrganizationMode } from "../organization/modes.js";
+import { allModes, modeDef, isOrganizationMode, resolveModeArg } from "../organization/modes.js";
 import { assertProjectTransition } from "../projects/lifecycle.js";
 import { budgetFor, estimateDifficulty, classifyWork, WORK_CLASS_ORDER } from "../usage/budget.js";
 import { extractJson, asStringArray } from "./llmJson.js";
 import { approvalButtons, approvalCard, FEEDBACK_ACTIONS } from "../approvals/card.js";
 import { ACTION_POLICIES } from "../approvals/policy.js";
+import { autopilotCovers, autopilotIntent } from "../approvals/autopilot.js";
 import { AppError } from "../../util/errors.js";
-import { describePolicy, resolveExecutionPolicy, setExecutionPolicy } from "../execution/policy.js";
+import { codexEnvironmentFor, describePolicy, resolveExecutionPolicy, setCodexEnvironmentFor, setExecutionPolicy } from "../execution/policy.js";
 import { FLAG_DEFAULTS } from "../flags/index.js";
 import { syncExecutorFlags } from "../../executors/flags.js";
 import type { ExecutorKind } from "../../executors/types.js";
@@ -218,6 +219,8 @@ export class Orchestrator {
     await this.ctx.repos.requests.add({ userId: user.id, projectId: project?.id ?? null, source: "telegram", rawText: text, classification: c.classification, mentionedAgentIds: c.mentionedAgentIds });
 
     if (/^(토론\s*연장|연장해|더 토론)/.test(text)) return this.extendDiscussion(user, project);
+    const autoIntent = autopilotIntent(text);
+    if (autoIntent) return this.autopilotCommand(user, project, autoIntent);
 
     const voice = attachments.filter((a) => a.kind === "voice" || a.kind === "audio");
     if (voice.length) {
@@ -314,7 +317,7 @@ export class Orchestrator {
       "당신은 사용자의 AI 개발 조직 구성원입니다. 사용자의 마지막 메시지를 직전 대화와 함께 이해해 의도를 정하고, JSON 하나만 출력하세요.",
       NO_TOOLS_NOTE,
       "의도:",
-      '- "answer": 질문, 잡담, 진행 상황 문의, 의견 요청 → reply에 답변. 모르면 모른다고 하고, 하지 않은 일을 했다고 말하지 마세요.',
+      '- "answer": 질문, 잡담, 진행 상황 문의, 의견 요청 → reply에 답변(보통 1~3문장, 꼭 필요할 때만 3줄 이내 목록). 모르면 모른다고 하고, 하지 않은 일을 했다고 말하지 마세요.',
       '- "task": 지금 무언가를 만들거나 고치거나 조사하라는 지시. 직전에 AI가 제안한 내용에 "알아서 해", "그렇게 해줘", "좋아 진행해"라고 답한 경우도 포함 → task에 실행할 작업을 구체적으로 정리(직전 대화에서 정해진 내용 포함), title에 짧은 제목, project에 대상 프로젝트 이름(맥락의 프로젝트 중), reply에 한 줄 확인.',
       '- "idea": 지금 하라는 게 아니라 나중에 고려할 아이디어 → reply에 짧은 확인.',
       '- "new_project": 새 프로젝트를 만들자는 요청.',
@@ -405,7 +408,7 @@ export class Orchestrator {
       listener: { kind: "user" },
       situation: "instruction",
       body: `'${title}' 작업으로 접수했어요.${names.length ? ` ${names.join(", ")}을(를) 우선 배정할게요.` : ""} 난이도 예상: ${difficulty}.`,
-      buttons: [[{ text: "⬆️ 우선순위 올리기", data: `t:prio:${task.id}` }, { text: "🛑 취소", data: `t:cancel:${task.id}` }]],
+      buttons: [[{ text: "⬆️ 우선순위 올리기", data: `t:prio:${task.id}` }, { text: "🛑 취소", data: `t:cancel:${task.id}` }], ...((await this.ctx.repos.projects.get(project.id)).settings.autopilot ? [] : [[{ text: "🤖 끝까지 자동 진행", data: `p:auto:${project.id}:on` }]])],
       machineState: { kind: "task.created", taskId: task.id, projectId: project.id },
     });
     await this.scheduler?.enqueueTask(task, project, { incident: task.priority >= 90 });
@@ -578,6 +581,51 @@ export class Orchestrator {
     return `작업 ${tasks.length}개${open.length ? `, 진행/대기: ${open.slice(0, 3).map((t) => `${t.title}(${t.state})`).join(", ")}` : ", 모두 종료"}`;
   }
 
+  /** /auto, "자동으로 진행해": in a topic → that project; in the lounge → every active project and new ones. */
+  private async autopilotCommand(user: User, project: Project | null, intent: "on" | "off" | "status"): Promise<void> {
+    const targets = project && project.workType !== "lounge" ? [project] : (await this.ctx.repos.projects.listByOwner(user.id)).filter((p) => p.workType !== "lounge" && p.status === "active");
+    if (intent === "status") {
+      const lines = targets.map((p) => `${p.settings.autopilot ? "🤖 자동 진행" : "✋ 단계마다 확인"} — ${p.name}`);
+      return this.system(user, project, `${lines.join("\n") || "진행 중인 프로젝트가 없어요."}\n켜기: /auto on · 끄기: /auto off (또는 "자동으로 진행해")`, "autopilot.status");
+    }
+    if (!project || project.workType === "lounge") await this.ctx.repos.settings.set("user", user.id, AUTOPILOT_DEFAULT_KEY, intent === "on");
+    const n = await this.setAutopilot(user, targets, intent === "on");
+    const where = project && project.workType !== "lounge" ? `'${project.name}'` : targets.length ? `모든 프로젝트(${targets.map((p) => p.name).join(", ")})와 새 프로젝트` : "새 프로젝트";
+    await this.moderatorSays(
+      user,
+      project,
+      intent === "on"
+        ? `${where}를 자동 진행으로 바꿨어요. 계획·예산 연장·PR 병합 같은 승인은 알아서 넘기고, 배포·삭제·유료 API 같은 위험한 작업만 물어볼게요.${n ? ` 기다리던 승인 ${n}건도 처리했어요.` : ""}`
+        : `${where}는 이제 단계마다 확인받을게요.`,
+      "autopilot.changed",
+    );
+  }
+
+  /** Switch autopilot; when turning it on, grant the routine approvals that are already waiting. */
+  async setAutopilot(user: User, projects: Project[], on: boolean): Promise<number> {
+    let granted = 0;
+    for (const p0 of projects) {
+      const p = await this.ctx.repos.projects.update(p0.id, { settings: { ...(await this.ctx.repos.projects.get(p0.id)).settings, autopilot: on } });
+      await this.ctx.repos.audit.record(user.id, on ? "autopilot.on" : "autopilot.off", `project:${p.id}`, "success", {});
+      if (!on) {
+        await this.refreshProgress(p.id);
+        continue;
+      }
+      for (const a of (await this.ctx.repos.approvals.listPending(user.id)).filter((x) => x.projectId === p.id && autopilotCovers(x.action))) {
+        const done = await this.ctx.repos.approvals.setStatus(a.id, "approved", "autopilot");
+        await this.ctx.repos.audit.record("autopilot", "approval.auto_approved", `approval:${a.id}`, "success", { action: a.action, taskId: a.taskId, projectId: p.id });
+        if (a.messageRef) {
+          const [chatId, messageId] = a.messageRef.split(":");
+          await this.ctx.out.editMessage({ chatId: chatId!, messageId: Number(messageId) }, { text: `🤖 자동 승인됨 — ${ACTION_POLICIES[a.action].labelKo}\n${a.summary}` }).catch(() => undefined);
+        }
+        await this.onApprovalDecided(user, done);
+        granted++;
+      }
+      await this.refreshProgress(p.id);
+    }
+    return granted;
+  }
+
   private async extendDiscussion(user: User, project: Project | null): Promise<void> {
     const scope = project ? "project" : "user";
     const last = await this.ctx.repos.settings.get<{ topic: string; context: string; agentIds: string[]; projectId: string | null }>(scope, project?.id ?? user.id, "discussion.last");
@@ -716,14 +764,19 @@ export class Orchestrator {
     await this.ctx.repos.decisions.create({ projectId: project.id, taskId: null, title: project.repoMode === "imported" ? "기존 저장소 연결" : "프로젝트 생성", rationale: `사용자 승인으로 ${project.repoRef ?? "로컬 저장소"} 연결`, alternatives: [], approvalRef: null, sourceRefs: [] });
     await this.ctx.memory.remember(project.id, "requirement", `프로젝트 목표: ${project.description || project.name}`, { certainty: "confirmed" });
     const kickoff = project.repoMode === "new" && !!project.description.trim();
+    if ((await this.ctx.repos.settings.get<boolean>("user", user.id, AUTOPILOT_DEFAULT_KEY)) && !project.settings.autopilot) project = await this.ctx.repos.projects.update(project.id, { settings: { ...project.settings, autopilot: true } });
+    const auto = !!project.settings.autopilot;
     await this.comm.say({
       user,
       project,
       speaker: { kind: "moderator" },
       listener: { kind: "user" },
       situation: "greeting",
-      body: `${project.name} 프로젝트를 시작했어요.${project.repoRef ? ` 저장소: https://github.com/${project.repoRef}` : ""}\n이 Topic에서 작업을 지시해 주세요.${kickoff ? " 설명대로 바로 만들려면 아래 버튼을 누르세요." : ""}`,
-      buttons: kickoff ? [[{ text: "▶️ 설명대로 바로 시작", data: `p:kick:${project.id}` }]] : undefined,
+      body: `${project.name} 프로젝트를 시작했어요.${project.repoRef ? ` 저장소: https://github.com/${project.repoRef}` : ""}\n${auto ? "🤖 자동 진행: 계획·PR 병합 같은 승인은 알아서 넘기고, 위험한 작업만 물어볼게요." : "끝까지 자동 승인으로 진행할까요? 위험한 작업(배포·삭제·유료 API)은 그래도 물어봐요."}${kickoff ? "\n설명대로 바로 만들려면 ▶️ 를 누르세요." : ""}`,
+      buttons: [
+        auto ? [{ text: "✋ 단계마다 확인으로 바꾸기", data: `p:auto:${project.id}:off` }] : [{ text: "🤖 끝까지 자동 진행", data: `p:auto:${project.id}:on` }, { text: "✋ 단계마다 확인", data: `p:auto:${project.id}:off` }],
+        ...(kickoff ? [[{ text: "▶️ 설명대로 바로 시작", data: `p:kick:${project.id}` }]] : []),
+      ],
       machineState: { kind: "project.activated", projectId: project.id },
     });
     if (project.repoMode === "imported" && project.workType === "coding") await this.scheduler?.enqueueBaseline?.(project);
@@ -993,6 +1046,11 @@ export class Orchestrator {
       case "approvals":
         await this.resendApprovals(user, project);
         return { toast: "승인 대기 목록을 보냈습니다." };
+      case "auto": {
+        const on = parts[3] !== "off";
+        const n = await this.setAutopilot(user, [project], on);
+        return { toast: on ? `자동 진행을 켰어요${n ? ` · 대기 중이던 승인 ${n}건 처리` : ""}` : "단계마다 확인할게요." };
+      }
       case "kick": {
         if ((await this.ctx.repos.tasks.listByProject(project.id)).some((t) => !isInternal(t))) return { toast: "이미 작업이 있어요." };
         await this.createTask(user, project, this.kickoffText(project), [], [], { title: `${project.name} 첫 구현` });
@@ -1075,12 +1133,13 @@ export class Orchestrator {
       case "/mode": {
         if (!arg) {
           const p = await this.ctx.repos.users.getProfile(user.id);
-          const options = allModes().map((m) => `${m} (${modeDef(m).emoji} ${modeDef(m).labelKo})`);
-          return say(`현재 모드: ${modeDef(p.mode).labelKo}\n변경: /mode <이름>\n${options.join("\n")}\n사용자 정의 세계관은 서버의 aa config → 사용자 정의 세계관에서 만들 수 있습니다.`);
+          const options = allModes().map((m) => `${modeDef(m).emoji} ${modeDef(m).labelKo} — ${modeDef(m).titles.user} · ${modeDef(m).titles.moderator} · ${modeDef(m).titles.member}`);
+          return say(`현재 모드: ${modeDef(p.mode).emoji} ${modeDef(p.mode).labelKo}\n변경: /mode <이름> (예: /mode 주방)\n${options.join("\n")}\n직접 만들려면 서버에서 aa config → 사용자 정의 세계관.`);
         }
-        if (!isOrganizationMode(arg)) return say(`알 수 없는 모드입니다. 사용 가능: ${allModes().join(", ")}`);
-        await this.setMode(user, arg);
-        return this.moderatorSays(user, project, `${modeDef(arg).labelKo} 모드로 전환했어요. 프로젝트·작업·기억은 그대로이고 표현만 바뀌어요.`, "mode.changed", "greeting");
+        const resolved = isOrganizationMode(arg) ? arg : resolveModeArg(arg);
+        if (!resolved) return say(`알 수 없는 모드입니다. 사용 가능: ${allModes().map((m) => modeDef(m).labelKo).join(", ")}`);
+        await this.setMode(user, resolved);
+        return this.moderatorSays(user, project, `${modeDef(resolved).emoji} ${modeDef(resolved).labelKo} 모드로 바꿨어요. 일과 기억은 그대로, 말투만 바뀌어요.`, "mode.changed", "greeting");
       }
       case "/agents":
         return say(await this.agentsText(user));
@@ -1104,6 +1163,8 @@ export class Orchestrator {
         await this.proposeImport(user, `${m[1]}/${m[2]}`, []);
         return;
       }
+      case "/auto":
+        return this.autopilotCommand(user, project, arg === "off" ? "off" : arg === "on" || !arg ? (arg ? "on" : "status") : "status");
       case "/approvals":
         return this.resendApprovals(user, project);
       case "/baseline":
@@ -1332,11 +1393,18 @@ export class Orchestrator {
       await setExecutionPolicy(this.ctx.repos, scope, scopeId, { priority: kinds });
     } else if (sub === "fallback" && (val === "on" || val === "off")) {
       await setExecutionPolicy(this.ctx.repos, scope, scopeId, { autoFallback: val === "on" });
+    } else if (sub === "cloud") {
+      // Codex Cloud environments belong to one repository, so they are set per project.
+      if (!project) return "Codex Cloud 환경 ID는 프로젝트마다 다릅니다. 해당 프로젝트 Topic에서 /exec cloud <환경 ID> 로 넣어 주세요.";
+      if (!val) return `[${project.name}] Codex Cloud 환경: ${(await codexEnvironmentFor(this.ctx.repos, project.id)) ?? "없음 (로컬 CLI로 실행)"}\n설정: /exec cloud <환경 ID> · 해제: /exec cloud off`;
+      if (!project.repoRef) return "GitHub 저장소가 연결된 프로젝트만 Codex Cloud를 쓸 수 있어요.";
+      await setCodexEnvironmentFor(this.ctx.repos, project.id, val === "off" ? null : val);
     } else if (sub) {
-      return "사용법: /exec [priority cloud,local_cli | fallback on|off]";
+      return "사용법: /exec [priority cloud,local_cli | fallback on|off | cloud <Codex 환경 ID>|off]";
     }
     const p = await resolveExecutionPolicy(this.ctx.repos, { userId: user.id, projectId: project?.id });
-    return `${project ? `[${project.name}] ` : ""}${describePolicy(p)}`;
+    const env = project ? await codexEnvironmentFor(this.ctx.repos, project.id) : null;
+    return `${project ? `[${project.name}] ` : ""}${describePolicy(p)}${project ? `\nCodex Cloud 환경: ${env ?? "없음 — 이 프로젝트는 로컬 CLI로 실행 (/exec cloud <환경 ID>)"}` : ""}`;
   }
 
   /* ---------------------------------------------- scheduling helpers */
@@ -1348,6 +1416,7 @@ export class Orchestrator {
 }
 
 export const HELP_TEXT = [
+  "/auto [on|off] — 자동 진행 (위험한 작업만 승인 요청). \"자동으로 진행해\"라고 말해도 됩니다",
   "🤖 AgentAgency — Your Agents. Your Agency.",
   "",
   "자연어로 지시하면 진행자 AI가 해석해 팀을 소집합니다. @이름 으로 특정 AI를 지정할 수 있어요.",
@@ -1364,7 +1433,7 @@ export const HELP_TEXT = [
   "/moderator <이름> — 진행자 AI 지정",
   "/new <설명>, /new research <주제>, /import owner/repo — 프로젝트 제안/가져오기",
   "/pause /resume /cancel /priority /complete /archive /restore /delete — 프로젝트 Topic 제어",
-  "/exec — 실행 우선순위(Cloud→Local)·자동 전환",
+  "/exec — 실행 우선순위(Cloud→Local)·자동 전환 · /exec cloud <환경 ID> 로 프로젝트별 Codex Cloud 환경",
   "/executors — 실행기 연결·지원 상태",
   "/ideas, /flags, /flag <key> on|off",
 ].join("\n");
@@ -1410,3 +1479,6 @@ const NO_TOOLS_NOTE = "이 대화에서는 파일을 만들거나 고치거나 �
 export function looksLikeToolRefusal(text: string): boolean {
   return /(Write|Edit|Bash|쓰기|편집|도구|권한|permission)[^\n]{0,40}(없|못|막|거부|허용되지|denied|not allowed)/i.test(text);
 }
+
+/** User-level default: new projects start in 자동 진행 after "/auto on" in the lounge. */
+const AUTOPILOT_DEFAULT_KEY = "autopilot.default";

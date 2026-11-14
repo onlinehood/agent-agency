@@ -16,6 +16,67 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("자동 진행: offered at project start; on, the task runs to a merged PR with no approval cards; turning it on later grants what is waiting", async () => {
+    const h = codingHandler();
+    app = await makeTestApp({ claude: h, codex: h });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    // The start message asks whether to run to the end automatically.
+    expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `p:auto:${project.id}:on`))).toBe(true);
+    const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+
+    // Step-by-step first: the task stops at the merge approval.
+    await say("hello 함수를 추가해줘");
+    await app.scheduler.drain(60_000);
+    let [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("awaiting_approval");
+    expect((await app.ctx.repos.approvals.listPending(user.id)).some((a) => a.action === "pr_merge")).toBe(true);
+    // "자동으로 진행해" mid-way: the waiting merge approval is granted and the PR merges.
+    await say("자동으로 진행해");
+    await app.scheduler.drain(60_000);
+    task = await app.ctx.repos.tasks.get(task!.id);
+    expect(task.state).toBe("done");
+    expect(app.github.calls.filter((c) => c.startsWith("mergePullRequest"))).toHaveLength(1);
+    expect((await app.ctx.repos.projects.get(project.id)).settings.autopilot).toBe(true);
+    expect(app.out.pinned.get(project.id)).toContain("자동 진행");
+
+    // With autopilot on, the next task goes all the way with no approval cards at all.
+    const cardsBefore = app.out.project.filter((m) => m.msg.buttons?.flat().some((b) => b.data.startsWith("a:ok:"))).length;
+    await say("hello 함수에 설명 주석을 추가해줘");
+    await app.scheduler.drain(60_000);
+    const second = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal && t.id !== task.id)[0]!;
+    expect(second.state).toBe("done");
+    expect(app.out.project.filter((m) => m.msg.buttons?.flat().some((b) => b.data.startsWith("a:ok:"))).length).toBe(cardsBefore);
+    expect(app.out.allText()).toContain("🤖 자동 진행 — PR 병합");
+    expect(await app.ctx.repos.approvals.listPending(user.id)).toHaveLength(0);
+  }, 180_000);
+
+  it("a review that rejects with only minor points (e.g. 'another agent must verify') does not loop the fix step", async () => {
+    const base = codingHandler();
+    const picky = (req: { prompt: string }) =>
+      req.prompt.includes("코드 리뷰어")
+        ? JSON.stringify({ approved: false, summary: "독립 검증 미완료", issues: [{ severity: "minor", description: "다른 에이전트의 독립 실행 검증 기록이 없습니다" }], message: "검증 기록만 남겨 주세요." })
+        : base(req as never);
+    app = await makeTestApp({ claude: picky as never, codex: picky as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.checkpoint.reviewVerdict?.approved).toBe(true);
+    expect(task!.prRef).toContain("/pull/1");
+    expect(task!.attempts).toBe(1); // no extra fix rounds
+    // The review prompt tells the reviewer not to reject only because it could not run commands.
+    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("명령을 직접 실행하지 못했더라도 그것만으로 반려하지 마세요");
+    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("코드로 충족할 수 없는 절차 항목");
+  }, 120_000);
+
   it("runs plan → implement → gate → review → PR → merge with approval", async () => {
     const h = codingHandler();
     app = await makeTestApp({ claude: h, codex: h });

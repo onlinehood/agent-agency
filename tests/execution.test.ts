@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { makeTestApp, seedRemote, seedUserAndAgents, codingHandler, type TestApp } from "./helpers.js";
 import { SimulatorAdapter } from "../src/executors/simulator.js";
-import { resolveExecutionPolicy, setExecutionPolicy, executorCandidates, DEFAULT_EXECUTION_POLICY } from "../src/core/execution/policy.js";
+import { resolveExecutionPolicy, setExecutionPolicy, executorCandidates, DEFAULT_EXECUTION_POLICY, codexEnvironmentFor, setCodexEnvironmentFor } from "../src/core/execution/policy.js";
 import { CodexCloudAdapter } from "../src/executors/codexCloud.js";
 import { ClaudeCliAdapter } from "../src/executors/claude.js";
 import { CodexCliAdapter } from "../src/executors/codex.js";
@@ -118,6 +118,31 @@ describe("execution policy (PRD §15)", () => {
     const out = await run(claude, true);
     expect(out.status).toBe("succeeded");
     expect(app.claude.calls.slice(n).map((r) => r.resumeSessionRef ?? null)).toEqual([impl.sessionRef, null]);
+  });
+
+  it("Codex Cloud runs only with the project's own environment; other projects stay on the local CLI", async () => {
+    const cloud = new SimulatorAdapter("codex-cloud", () => "ok", 0, { kind: "cloud", provider: "openai" });
+    app = await makeTestApp({ extraAdapters: [cloud], codex: () => "ok" });
+    app.ctx.executors.setStatus(await cloud.detect());
+    const { user, codex } = await seedUserAndAgents(app);
+    const a = await app.ctx.repos.projects.create({ ownerId: user.id, name: "A", slug: "a", status: "active", repoRef: "tester/a" });
+    const b = await app.ctx.repos.projects.create({ ownerId: user.id, name: "B", slug: "b", status: "active", repoRef: "tester/b" });
+    const run = async (project: typeof a) => app!.orchestrator.runner.run({ agent: codex, task: await app!.ctx.repos.tasks.create({ projectId: project.id, title: "t" }), project, purpose: "implement", prompt: "x", cwd: app!.dataDir, mode: "write" });
+    // No environment anywhere → the cloud executor is skipped with a reason; the CLI runs.
+    let out = await run(a);
+    expect(out.adapterId).toBe("codex-cli");
+    expect(out.attempts.find((x) => x.adapterId === "codex-cloud")?.reason).toContain("환경 ID가 없음");
+    // Project A gets its environment (via the Telegram command in its topic).
+    const tg = await app.ctx.repos.users.get(user.id);
+    await setCodexEnvironmentFor(app.ctx.repos, a.id, "env-repo-a");
+    out = await run(a);
+    expect(out.adapterId).toBe("codex-cloud");
+    expect(cloud.calls.at(-1)!.cloud?.environmentId).toBe("env-repo-a");
+    // Project B never borrows A's environment.
+    out = await run(b);
+    expect(out.adapterId).toBe("codex-cli");
+    expect(await codexEnvironmentFor(app.ctx.repos, b.id)).toBeNull();
+    void tg;
   });
 
   it("unverified cloud executors are reported honestly and only enabled by a recorded verification", async () => {

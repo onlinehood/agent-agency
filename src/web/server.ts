@@ -178,7 +178,6 @@ export function createWebApp(rt: Runtime, opts: { controlToken?: string } = {}):
       }
     } else if (step === "executors") {
       await ctx.executors.detectAll();
-      const policy = (await primaryUser()) ? await resolveExecutionPolicy(ctx.repos, { userId: (await primaryUser())!.id }) : null;
       const rows = ctx.executors
         .list()
         .map((a) => {
@@ -192,7 +191,7 @@ export function createWebApp(rt: Runtime, opts: { controlToken?: string } = {}):
         <pre>./aa login claude      # Claude Pro/Max 구독\n./aa login codex       # ChatGPT 플랜\n./aa login gemini      # Google 계정 (선택)</pre>
         <p class="muted">설치 폴더(예: /srv/agent-agency)에서 실행합니다. 직접 실행하려면 <code>docker compose exec -it app claude auth login</code>.</p>
         <div class="tbl"><table><tr><th>실행기</th><th>사용 가능</th><th>인증</th><th>지원 범위</th><th></th></tr>${rows}</table></div>
-        <form method="post" action="/setup/codex-env">${tok}<label>Codex Cloud 환경 ID (선택, Codex 웹에서 생성)</label><input name="env" value="${esc(policy?.cloud.codexEnvironmentId ?? "")}" placeholder="env_..."><button class="secondary">저장</button></form>
+        <p class="muted">Codex Cloud(선택)의 환경 ID는 저장소마다 다르므로 프로젝트별로 넣습니다: 프로젝트 Topic에서 <code>/exec cloud &lt;환경 ID&gt;</code> 또는 서버에서 <code>aa config</code> → AI 구독.</p>
         <form method="post" action="/setup/executors/confirm">${tok}<button>다음 단계</button></form></div>`;
     } else if (step === "github") {
       body = `<div class="card"><h2>GitHub 연결</h2><p class="muted">개인 계정: Fine-grained PAT을 권장합니다. GitHub App은 개인 계정에 새 저장소를 만들 수 없습니다. 조직: GitHub App을 만들어 필요한 저장소에만 설치하세요. 권한은 두 방식 모두 Contents·Pull requests 읽기/쓰기와 Metadata 읽기(자동), 새 저장소를 만들려면 Administration 쓰기가 필요합니다. 자세한 절차는 docs/INSTALL.md 5.4를 보세요.</p>
@@ -296,12 +295,6 @@ export function createWebApp(rt: Runtime, opts: { controlToken?: string } = {}):
     return c.redirect(c.req.header("referer")?.includes("/settings") ? "/settings" : "/setup");
   });
 
-  app.post("/setup/codex-env", async (c) => {
-    const f = await form(c);
-    await setup.setCodexEnvironment(str(f.env));
-    flash(c, "ok", "Codex Cloud 환경 ID를 저장했습니다.");
-    return c.redirect("/setup");
-  });
 
   app.post("/setup/executors/confirm", async (c) => {
     if (!ctx.executors.usableIds().length) flash(c, "err", "사용 가능한 실행기가 아직 없습니다. 로그인 후 검증하면 작업을 실행할 수 있습니다. (설정은 계속 진행)");
