@@ -45,18 +45,84 @@ export interface RenderInput {
   machineState: MachineState;
 }
 
-/** Convert a neutral sentence ending into the target register. Only a light-touch, safe transformation. */
-export function applyEnding(sentence: string, ending: StyleSpec["ending"]): string {
-  let s = sentence.trim();
-  if (!s) return s;
-  if (ending === "습니다") {
-    s = s.replace(/했어요([.!?]?)$/u, "했습니다$1").replace(/이에요([.!?]?)$/u, "입니다$1").replace(/예요([.!?]?)$/u, "입니다$1").replace(/해요([.!?]?)$/u, "합니다$1").replace(/어요([.!?]?)$/u, "습니다$1");
-  } else if (ending === "요") {
-    s = s.replace(/했습니다([.!?]?)$/u, "했어요$1").replace(/입니다([.!?]?)$/u, "이에요$1").replace(/합니다([.!?]?)$/u, "해요$1");
-  } else {
-    s = s.replace(/했습니다([.!?]?)$/u, "했어$1").replace(/했어요([.!?]?)$/u, "했어$1").replace(/입니다([.!?]?)$/u, "이야$1").replace(/이에요([.!?]?)$/u, "이야$1").replace(/합니다([.!?]?)$/u, "해$1").replace(/해요([.!?]?)$/u, "해$1");
+/* ---------- Hangul helpers for sentence endings ---------- */
+const HANGUL_BASE = 0xac00;
+const isSyllable = (ch: string | undefined): ch is string => !!ch && ch >= "가" && ch <= "힣";
+const jongOf = (ch: string) => (ch.charCodeAt(0) - HANGUL_BASE) % 28;
+const jungOf = (ch: string) => Math.floor((ch.charCodeAt(0) - HANGUL_BASE) / 28) % 21;
+const withJong = (ch: string, j: number) => String.fromCharCode(ch.charCodeAt(0) - jongOf(ch) + j);
+const withJung = (ch: string, v: number) => String.fromCharCode(HANGUL_BASE + (Math.floor((ch.charCodeAt(0) - HANGUL_BASE) / 588) * 21 + v) * 28 + jongOf(ch));
+const JONG = { none: 0, rieul: 8, bieup: 17, ssang_siot: 20 } as const;
+// Vowel indices (jungseong).
+const V = { a: 0, ae: 1, ya: 2, eo: 4, e: 5, yeo: 6, o: 8, wa: 9, wae: 10, oe: 11, u: 13, wo: 14, eu: 18, i: 20 } as const;
+
+/** 해요체 for a stem without a final consonant: 보→봐요, 주→줘요, 기다리→기다려요, 되→돼요, 가→가요, 바뀌→바뀌어요. */
+function politeFromOpenStem(stem: string): string {
+  const last = stem.slice(-1);
+  const head = stem.slice(0, -1);
+  if (!isSyllable(last)) return `${stem}어요`;
+  const v = jungOf(last);
+  if ([V.a, V.eo, V.ae, V.e, V.yeo, V.ya].includes(v as never)) return `${stem}요`;
+  const contracted: Record<number, number> = { [V.o]: V.wa, [V.u]: V.wo, [V.i]: V.yeo, [V.eu]: V.eo, [V.oe]: V.wae };
+  if (contracted[v] !== undefined) return `${head}${withJung(last, contracted[v]!)}요`;
+  return `${stem}어요`;
+}
+
+/** 습니다/ㅂ니다 → 해요체. */
+function toPolite(body: string): string | null {
+  let m: RegExpExecArray | null;
+  if ((m = /^(.*)했습니다$/u.exec(body))) return `${m[1]}했어요`;
+  if ((m = /^(.*)것입니다$/u.exec(body))) return `${m[1]}거예요`;
+  if ((m = /^(.*?)([가-힣])입니다$/u.exec(body))) return `${m[1]}${m[2]}${jongOf(m[2]!) ? "이에요" : "예요"}`;
+  if ((m = /^(.*)합니다$/u.exec(body))) return `${m[1]}해요`;
+  if ((m = /^(.*?)([가-힣])습니다$/u.exec(body))) {
+    // 있습니다→있어요, 좋습니다→좋아요, 하겠습니다→하겠어요
+    const bright = [V.a, V.o].includes(jungOf(m[2]!) as never);
+    return `${m[1]}${m[2]}${bright ? "아요" : "어요"}`;
   }
-  return s;
+  if ((m = /^(.*?)([가-힣])니다$/u.exec(body)) && jongOf(m[2]!) === JONG.bieup) return politeFromOpenStem(`${m[1]}${withJong(m[2]!, JONG.none)}`);
+  return null;
+}
+
+/** 해요체 → 합니다체 (only forms it can convert correctly; others stay as they are). */
+function toFormal(body: string): string | null {
+  let m: RegExpExecArray | null;
+  if ((m = /^(.*)거예요$/u.exec(body))) return `${m[1]}것입니다`;
+  if ((m = /^(.*)(이에요|예요)$/u.exec(body))) return `${m[1]}입니다`;
+  if ((m = /^(.*)해요$/u.exec(body))) return `${m[1]}합니다`;
+  // 할게요→하겠습니다, 드릴게요→드리겠습니다
+  if ((m = /^(.*?)([가-힣])게요$/u.exec(body)) && jongOf(m[2]!) === JONG.rieul) return `${m[1]}${withJong(m[2]!, JONG.none)}겠습니다`;
+  const contracted: Record<string, string> = { 돼요: "됩니다", 봐요: "봅니다", 줘요: "줍니다", 와요: "옵니다", 가요: "갑니다", 써요: "씁니다" };
+  for (const [from, to] of Object.entries(contracted)) if (body.endsWith(from)) return body.slice(0, -from.length) + to;
+  if ((m = /^(.*?)([가-힣])(어|아)요$/u.exec(body))) {
+    const x = m[2]!;
+    // 있어요→있습니다, 했어요→했습니다, 좋아요→좋습니다 / 바뀌어요→바뀝니다
+    return jongOf(x) ? `${m[1]}${x}습니다` : `${m[1]}${withJong(x, JONG.bieup)}니다`;
+  }
+  return null;
+}
+
+/** 반말 for the few forms that convert reliably. */
+function toCasual(body: string): string | null {
+  let m: RegExpExecArray | null;
+  if ((m = /^(.*)했(습니다|어요)$/u.exec(body))) return `${m[1]}했어`;
+  if ((m = /^(.*?)([가-힣])(입니다|이에요|예요)$/u.exec(body))) return `${m[1]}${m[2]}${jongOf(m[2]!) ? "이야" : "야"}`;
+  if ((m = /^(.*)(합니다|해요)$/u.exec(body))) return `${m[1]}해`;
+  return null;
+}
+
+/**
+ * Convert a neutral sentence ending into the target register. Light-touch and spelling-safe:
+ * a form it cannot convert correctly (e.g. irregular stems) is left as written.
+ */
+export function applyEnding(sentence: string, ending: StyleSpec["ending"]): string {
+  const s = sentence.trim();
+  if (!s) return s;
+  const m = /^(.*?)([.!?…~]*)$/su.exec(s)!;
+  const body = m[1]!;
+  const punct = m[2] ?? "";
+  const out = ending === "습니다" ? toFormal(body) : ending === "요" ? toPolite(body) : toCasual(body);
+  return out === null ? s : `${out}${punct}`;
 }
 
 export function toDialogueContext(input: Omit<RenderInput, "body" | "machineState">): DialogueContext {
