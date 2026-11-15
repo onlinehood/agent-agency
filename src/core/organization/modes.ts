@@ -150,7 +150,31 @@ export function resolveModeArg(arg: string): OrganizationMode | null {
     const d = modeDef(m);
     if (m.toLowerCase() === a || m.toLowerCase().endsWith(`:${a}`) || d.labelKo.toLowerCase() === a || d.labelEn.toLowerCase() === a || d.labelKo.replace(/\s+/g, "").includes(a.replace(/\s+/g, ""))) return m;
   }
-  return null;
+  // Small typos ("coporate", "campos"): the single closest name within 2 edits.
+  let best: OrganizationMode | null = null;
+  let bestD = Infinity;
+  let tie = false;
+  for (const m of allModes()) {
+    const d = modeDef(m);
+    const dist = Math.min(...[m.replace(/^[a-z]+:/, ""), d.labelEn, d.labelKo].map((n) => editDistance(a, n.toLowerCase())));
+    if (dist < bestD) [best, bestD, tie] = [m, dist, false];
+    else if (dist === bestD) tie = true;
+  }
+  return best && bestD <= 2 && !tie && a.length >= 4 ? best : null;
+}
+
+function editDistance(x: string, y: string): number {
+  const prev = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= y.length; j++) {
+      const tmp = prev[j]!;
+      prev[j] = Math.min(prev[j]! + 1, prev[j - 1]! + 1, diag + (x[i - 1] === y[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[y.length]!;
 }
 
 export function isBuiltInMode(v: string): v is BuiltInMode {

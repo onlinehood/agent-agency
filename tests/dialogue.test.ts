@@ -82,6 +82,37 @@ describe("role-aware dialogue (PRD §2.2)", () => {
     expect(applyEnding("완료했습니다", "요")).toBe("완료했어요");
   });
 
+  it("ending conversion keeps Korean spelling right (no '바뀌습니다')", () => {
+    const formal: Array<[string, string]> = [
+      ["표현만 바뀌어요.", "표현만 바뀝니다."],
+      ["그대로예요.", "그대로입니다."],
+      ["준비가 됐어요", "준비가 됐습니다"],
+      ["문제가 없어요!", "문제가 없습니다!"],
+      ["결과가 좋아요", "결과가 좋습니다"],
+      ["바로 시작할게요.", "바로 시작하겠습니다."],
+      ["보고 드릴게요", "보고 드리겠습니다"],
+      ["이건 계산기예요", "이건 계산기입니다"],
+      ["다음 단계로 가요", "다음 단계로 갑니다"],
+      ["승인돼요", "승인됩니다"],
+      ["확인해 주세요.", "확인해 주세요."], // request form stays
+      ["진행할까요?", "진행할까요?"], // question stays
+    ];
+    for (const [from, to] of formal) expect(applyEnding(from, "습니다")).toBe(to);
+    const polite: Array<[string, string]> = [
+      ["표현만 바뀝니다.", "표현만 바뀌어요."],
+      ["결과입니다", "결과예요"],
+      ["책입니다", "책이에요"],
+      ["준비됩니다", "준비돼요"],
+      ["잠시 기다립니다", "잠시 기다려요"],
+      ["문제 없습니다", "문제 없어요"],
+      ["좋습니다", "좋아요"],
+    ];
+    for (const [from, to] of polite) expect(applyEnding(from, "요")).toBe(to);
+    expect(applyEnding("계산기입니다.", "반말")).toBe("계산기야.");
+    expect(applyEnding("결과입니다.", "반말")).toBe("결과야.");
+    expect(applyEnding("책이에요", "반말")).toBe("책이야");
+  });
+
   it("recognises 자동 진행 requests without catching feature requests or risky actions", () => {
     expect(autopilotIntent("자동으로 진행해")).toBe("on");
     expect(autopilotIntent("끝까지 알아서 해줘")).toBe("on");
@@ -108,6 +139,9 @@ describe("role-aware dialogue (PRD §2.2)", () => {
     expect(resolveModeArg("우주 관제센터")).toBe("preset:mission");
     expect(resolveModeArg("길드")).toBe("preset:guild");
     expect(resolveModeArg("건설현장")).toBe("construction");
+    expect(resolveModeArg("coporate")).toBe("corporate"); // small typo
+    expect(resolveModeArg("constrution")).toBe("construction");
+    expect(resolveModeArg("xyzzy")).toBeNull();
     const chef = styleInstructions({ mode: "preset:kitchen", speakerRole: "moderator", listenerRole: "member", situation: "instruction" }, "클로", "덱스");
     expect(chef).toContain("헤드셰프답게");
     expect(chef).toContain("예스 셰프");
