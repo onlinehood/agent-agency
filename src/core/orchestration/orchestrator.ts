@@ -18,6 +18,7 @@ import { assertProjectTransition } from "../projects/lifecycle.js";
 import { budgetFor, estimateDifficulty, classifyWork, WORK_CLASS_ORDER } from "../usage/budget.js";
 import { extractJson, asStringArray } from "./llmJson.js";
 import { CAPABILITY_NOTE } from "../../plugins/coding-agency/prompts.js";
+import { TASK_INPUT_KEY } from "../../plugins/coding-agency/workflow.js";
 import { approvalButtons, approvalCard, FEEDBACK_ACTIONS } from "../approvals/card.js";
 import { ACTION_POLICIES } from "../approvals/policy.js";
 import { autopilotCovers, autopilotIntent } from "../approvals/autopilot.js";
@@ -205,6 +206,7 @@ export class Orchestrator {
     const text = m.text.trim();
     try {
       if (text && !text.startsWith("/") && (await this.consumeFeedback(user, m.chatId, m.topicId ?? null, text))) return;
+      if (text && !text.startsWith("/") && (await this.consumeTaskInput(user, m.chatId, m.topicId ?? null, text))) return;
       if (text.startsWith("/")) return await this.handleCommand(user, project ?? null, text);
       await this.handleNatural(user, project ?? null, text, m.attachments ?? []);
     } catch (e) {
@@ -801,6 +803,16 @@ export class Orchestrator {
       if (parts[0] === "t") {
         const [, op, taskId] = parts;
         if (op === "cancel") return { toast: await this.cancelTask(user, taskId!) };
+        if (op === "skipask") {
+          // Go on without what was asked: open the PR and record the item there.
+          const t = await this.ctx.repos.tasks.get(taskId!);
+          const p = await this.ctx.repos.projects.get(t.projectId);
+          const items = ((t.checkpoint.awaitingUser as { items?: string[] } | undefined)?.items ?? []).map((i) => `${i} (사용자 확인 필요)`);
+          await this.ctx.repos.settings.delete("user", user.id, TASK_INPUT_KEY);
+          const nt = await this.ctx.repos.tasks.update(t.id, { state: "queued", stage: "pr", blockedReason: null, checkpoint: { awaitingUser: null, unresolvedReview: items } });
+          await this.scheduler?.enqueueTask(nt, p);
+          return { toast: "그 부분은 빼고 진행할게요." };
+        }
         if (op === "retry") {
           await this.retryTask(user, taskId!);
           return { toast: "재시도합니다." };
@@ -848,6 +860,27 @@ export class Orchestrator {
     if (approval.taskId) await this.ctx.repos.tasks.update(approval.taskId, { state: "blocked", blockedReason: "사용자 수정 의견 대기" });
     if (approval.action === "create_project" && approval.projectId) await this.ctx.repos.projects.update(approval.projectId, { status: "archived", archivedAt: new Date().toISOString() });
     if (approval.projectId) await this.refreshProgress(approval.projectId);
+  }
+
+  /** An agent asked the user for something (a deploy URL, an account…): this message is the answer. */
+  async consumeTaskInput(user: User, chatId: string, topicId: number | null, text: string): Promise<boolean> {
+    const pending = await this.ctx.repos.settings.get<{ taskId: string; projectId: string; chatId: string | null; topicId: number | null }>("user", user.id, TASK_INPUT_KEY);
+    if (!pending || pending.chatId !== chatId || (pending.topicId ?? null) !== topicId) return false;
+    const task = await this.ctx.repos.tasks.find(pending.taskId);
+    await this.ctx.repos.settings.delete("user", user.id, TASK_INPUT_KEY);
+    if (!task || task.state !== "blocked" || !task.checkpoint.awaitingUser) return false;
+    const project = await this.ctx.repos.projects.get(task.projectId);
+    const asked = ((task.checkpoint.awaitingUser as { items?: string[] }).items ?? []).join(" / ");
+    const nt = await this.ctx.repos.tasks.update(task.id, {
+      state: "queued",
+      stage: "fix",
+      blockedReason: null,
+      checkpoint: { awaitingUser: null, lastFeedback: `사용자 답변: ${text}\n(요청했던 것: ${asked}) 답변 내용을 반영하세요.` },
+    });
+    await this.ctx.memory.remember(project.id, "decision", `사용자 제공 (${asked}): ${text}`, { certainty: "confirmed", sourceRefs: [task.id] });
+    await this.scheduler?.enqueueTask(nt, project);
+    await this.moderatorSays(user, project, "고마워요, 이어서 할게요.", "task.user_input");
+    return true;
   }
 
   /** If a "수정 요청" is waiting in this chat/topic, treat the message as its feedback. */

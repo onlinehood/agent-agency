@@ -45,6 +45,8 @@ interface ReviewJson {
   approved?: boolean;
   summary?: string;
   issues?: Array<{ severity?: string; description?: string; file?: string }>;
+  /** Things only the user can do (deploy, a real URL, an account) — asked instead of retried. */
+  needs_user?: Array<{ what?: string; how?: string }>;
   message?: string;
 }
 
@@ -449,6 +451,14 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
           machineState: { kind: "review.verdict", taskId: task.id, executionId: out.executionId, status: approved ? "approved" : "changes_requested", data: { issues: issues.length } },
         });
         if (!approved) {
+          // What is left needs the user (deploy, a real URL, an account): ask once with how-to
+          // steps instead of sending the implementer round after round at something it cannot do.
+          const needsUser = [
+            ...(rj?.needs_user ?? []).filter((n) => n && typeof n.what === "string" && n.what.trim()).map((n) => ({ what: String(n.what), how: typeof n.how === "string" ? n.how : undefined })),
+            ...issues.filter((i) => i.severity !== "minor" && EXTERNAL_WORK.test(i.description)).map((i) => ({ what: i.description, how: undefined as string | undefined })),
+          ];
+          const codeBlocking = issues.filter((i) => i.severity !== "minor" && !EXTERNAL_WORK.test(i.description));
+          if (needsUser.length && !codeBlocking.length) return this.askUser(env, task, implementer, needsUser);
           // The same objection again after a fix round means the fix loop cannot resolve it (often a
           // criterion code cannot meet, e.g. a real deployment URL). Stop looping: open the PR with
           // the objection recorded, and let the user decide at the merge step.
@@ -633,6 +643,26 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
     });
   }
 
+  /** Ask the user for something the team cannot do; their next message in the topic continues the task. */
+  protected async askUser(env: WorkflowEnv, task: Task, speaker: Agent, items: Array<{ what: string; how?: string }>): Promise<TaskOutcome> {
+    const { ctx, project } = env;
+    const unique = [...new Map(items.map((i) => [i.what.slice(0, 80), i])).values()].slice(0, 3);
+    const how = unique.map((i) => i.how).find(Boolean) ?? howToFor(unique.map((i) => i.what).join(" "), project.repoRef);
+    await this.setState(env, task, { state: "blocked", blockedReason: "사용자 답변 대기", checkpoint: { awaitingUser: { items: unique.map((i) => i.what), askedAt: nowIso() } } });
+    await ctx.repos.settings.set("user", env.user.id, TASK_INPUT_KEY, { taskId: task.id, projectId: project.id, chatId: project.chatId, topicId: project.topicId });
+    await env.comm.say({
+      user: env.user,
+      project,
+      speaker: { kind: "agent", agent: speaker },
+      listener: { kind: "user" },
+      situation: "request_help",
+      body: `이건 제가 직접 할 수 없어서 도와주셔야 해요:\n${unique.map((i) => `• ${i.what.slice(0, 160)}`).join("\n")}${how ? `\n${how}` : ""}\n여기에 답해 주시면 이어서 할게요. 이 부분 없이 진행하려면 ⏭를 눌러 주세요.`,
+      buttons: [[{ text: "⏭ 이 부분 빼고 진행", data: `t:skipask:${task.id}` }, { text: "🛑 취소", data: `t:cancel:${task.id}` }]],
+      machineState: { kind: "task.needs_user", taskId: task.id, data: { items: unique.map((i) => i.what) } },
+    });
+    return { kind: "blocked", reason: "사용자 답변 대기" };
+  }
+
   protected async block(env: WorkflowEnv, task: Task, reason: string): Promise<TaskOutcome> {
     if (env.ctx.lifecycle.shuttingDown) {
       // Interrupted by a server stop, not a real failure: resume from the checkpoint on next start.
@@ -767,4 +797,18 @@ function similarity(a: string, b: string): number {
   let common = 0;
   for (const w of x) if (y.has(w)) common++;
   return common / Math.min(x.size, y.size);
+}
+
+/** Work the team cannot do from code: deployment, real service URLs, accounts, devices. */
+export const EXTERNAL_WORK = /(배포|deploy|vercel|netlify|cloudflare\s*pages|production\s*url|프로덕션\s*(url|주소)|실제\s*(서비스\s*)?(url|주소)|미리보기\s*(url|주소)|도메인|domain|api\s*키|api\s*key|계정\s*(생성|설정|연결)|결제|실기기|실제\s*기기|앱\s*스토어|app\s*store)/i;
+
+/** Pending "the agent asked the user something" per user (one at a time). */
+export const TASK_INPUT_KEY = "task.input.pending";
+
+/** Short how-to for the common cases, so the user knows exactly what to do. */
+function howToFor(text: string, repoRef: string | null): string {
+  if (/(vercel|배포|deploy|production|프로덕션|미리보기)/i.test(text))
+    return `방법(Vercel): vercel.com 로그인 → Add New → Project → GitHub 저장소${repoRef ? ` ${repoRef}` : ""} Import → Deploy. 끝나면 나오는 https://…vercel.app 주소를 보내 주세요. 한 번 연결해 두면 이후 병합될 때마다 자동으로 배포돼요.`;
+  if (/(api\s*키|api\s*key)/i.test(text)) return "키 값은 채팅에 올리지 말고 서버의 .env에 넣어 주세요. 넣은 뒤 변수 이름만 알려 주시면 돼요.";
+  return "";
 }

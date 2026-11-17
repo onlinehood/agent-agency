@@ -36,13 +36,68 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     expect(app.out.allText()).not.toContain("파일 변경이 없었습니다");
   }, 120_000);
 
+  it("something only the user can do (a real deploy URL) is asked once with how-to steps; the answer continues the task", async () => {
+    const base = codingHandler();
+    let reviews = 0;
+    const needsDeploy = (req: { prompt: string; cwd: string }) => {
+      if (!req.prompt.includes("코드 리뷰어")) return base(req as never);
+      reviews++;
+      return reviews === 1
+        ? JSON.stringify({ approved: false, summary: "배포 주소 없음", issues: [{ severity: "major", description: "README에 실제 Vercel Production URL이 없습니다", file: "README.md" }], message: "배포 주소가 필요해요." })
+        : JSON.stringify({ approved: true, summary: "좋음", issues: [], message: "좋아요." });
+    };
+    app = await makeTestApp({ claude: needsDeploy as never, codex: needsDeploy as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+    await say("hello 함수를 추가하고 README에 배포 주소를 적어줘");
+    await app.scheduler.drain(60_000);
+    let [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("blocked");
+    expect(task!.attempts).toBe(1); // asked right away, no retry rounds
+    const text = app.out.allText();
+    expect(text).toContain("이건 제가 직접 할 수 없어서 도와주셔야 해요");
+    expect(text).toContain("vercel.com 로그인 → Add New → Project");
+    expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `t:skipask:${task!.id}`))).toBe(true);
+    // The user's next message in the topic is the answer; the task continues with it.
+    await say("https://simple-calc.vercel.app");
+    await app.scheduler.drain(60_000);
+    task = await app.ctx.repos.tasks.get(task!.id);
+    expect(task.prRef).toContain("/pull/1");
+    const fixPrompt = app.claude.calls.concat(app.codex.calls).filter((r) => r.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다")).at(-1)!.prompt;
+    expect(fixPrompt).toContain("사용자 답변: https://simple-calc.vercel.app");
+  }, 180_000);
+
+  it("⏭ skips what was asked: the PR opens with the item recorded", async () => {
+    const base = codingHandler();
+    const needsDeploy = (req: { prompt: string; cwd: string }) =>
+      req.prompt.includes("코드 리뷰어") ? JSON.stringify({ approved: false, summary: "배포 필요", issues: [], needs_user: [{ what: "Vercel에 배포하고 주소 알려 주기" }], message: "배포는 부탁드려요." }) : base(req as never);
+    app = await makeTestApp({ claude: needsDeploy as never, codex: needsDeploy as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("blocked");
+    expect((await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `t:skipask:${task!.id}`, chatId: project.chatId!, messageId: 1 })).toast).toContain("빼고 진행");
+    await app.scheduler.drain(60_000);
+    expect((await app.ctx.repos.tasks.get(task!.id)).prRef).toContain("/pull/1");
+    expect(app.github.prBodies.at(-1)).toContain("Vercel에 배포하고 주소 알려 주기 (사용자 확인 필요)");
+  }, 180_000);
+
   it("the same review objection twice stops the fix loop and opens the PR with the objection recorded", async () => {
     const base = codingHandler();
     let n = 0;
     const stubborn = (req: { prompt: string; cwd: string }) => {
       if (!req.prompt.includes("코드 리뷰어")) return base(req as never);
       n++;
-      return JSON.stringify({ approved: false, summary: "README Production URL 누락", issues: [{ severity: "major", description: `README에 실제 Vercel Production URL이 없습니다 (${n}차)`, file: "README.md" }], message: "배포 주소를 넣어 주세요." });
+      return JSON.stringify({ approved: false, summary: "에러 문구가 너무 기술적", issues: [{ severity: "major", description: `0으로 나눌 때 에러 문구가 사용자에게 너무 기술적입니다 (${n}차)`, file: "hello.js" }], message: "문구를 쉽게 바꿔 주세요." });
     };
     app = await makeTestApp({ claude: stubborn as never, codex: stubborn as never });
     const { user, claude, codex } = await seedUserAndAgents(app);

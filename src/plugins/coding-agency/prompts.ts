@@ -52,7 +52,8 @@ export function reviewPrompt(input: { task: Task; diff: string; gate: string; st
     `\n## 팀의 능력\n${CAPABILITY_NOTE}`,
     `\n## 규칙\n${SAFETY_RULES.map((r) => `- ${r}`).join("\n")}`,
     `\n## 말투(message 필드에만 적용)\n${input.style}`,
-    '\n다음 JSON만 출력하세요:\n{"approved": true|false, "summary": "리뷰 요약", "issues": [{"severity": "blocker|major|minor", "description": "...", "file": "경로(선택)"}], "message": "구현 담당에게 하는 리뷰 대사(캐릭터)"}',
+    '\n팀이 할 수 없는 일(배포, 실제 URL, 외부 계정 등)이 꼭 필요하면 issues가 아니라 needs_user에 적으세요. 사용자에게 바로 부탁합니다.',
+    '\n다음 JSON만 출력하세요:\n{"approved": true|false, "summary": "리뷰 요약", "issues": [{"severity": "blocker|major|minor", "description": "...", "file": "경로(선택)"}], "needs_user": [{"what": "사용자가 해 줘야 할 일", "how": "방법(선택)"}], "message": "구현 담당에게 하는 리뷰 대사(캐릭터)"}',
   ].join("\n");
 }
 
