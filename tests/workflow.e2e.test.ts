@@ -18,6 +18,55 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("Vercel preview: posted when a build finishes, and a one-time hint when Vercel is not connected", async () => {
+    process.env.AA_PREVIEW_POLL_MS = "20";
+    try {
+      const h = codingHandler();
+      app = await makeTestApp({ claude: h, codex: h });
+      const { user, claude, codex } = await seedUserAndAgents(app);
+      const project = await activeProject(app, user.id, [
+        { agentId: claude.id, role: "leader" },
+        { agentId: codex.id, role: "reviewer" },
+      ]);
+      const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+      const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      // 1) Not connected: nothing found → one hint for the project.
+      await say("hello 함수를 추가해줘");
+      await app.scheduler.drain(60_000);
+      await wait(400);
+      expect(app.out.allText()).toContain("Vercel에 이 저장소를 연결하면 PR마다 미리보기 주소를 바로 알려 드릴게요");
+
+      // 2) Connected, still building: the URL is posted when the deployment is ready.
+      let calls = 0;
+      app.github.deploymentPreview = async (_repo: string, ref: string) => (++calls < 3 ? { state: "pending" as const } : { state: "ready" as const, url: `https://${ref.replace(/\//g, "-")}.vercel.app`, environment: "Preview" });
+      await say("hello 함수에 설명 주석을 추가해줘");
+      await app.scheduler.drain(60_000);
+      await wait(400);
+      expect(app.out.allText()).toMatch(/미리보기 준비됐어요 → https:\/\/.*\.vercel\.app/);
+
+      // The hint is shown only once per project.
+      expect(app.out.allText().split("Vercel에 이 저장소를 연결하면").length - 1).toBe(1);
+    } finally {
+      delete process.env.AA_PREVIEW_POLL_MS;
+    }
+  }, 180_000);
+
+  it("the done line carries the preview URL when it is already ready", async () => {
+    const h = codingHandler();
+    app = await makeTestApp({ claude: h, codex: h });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    app.github.deploymentPreview = async () => ({ state: "ready" as const, url: "https://demo-git-feature.vercel.app", environment: "Preview" });
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const done = app.out.allText().split("\n---\n").find((m) => m.includes("다 했어요!"))!;
+    expect(done).toContain("미리보기 → https://demo-git-feature.vercel.app");
+  }, 120_000);
+
   it("the leader asks a real question in chat before starting; the answer goes into the work", async () => {
     const base = codingHandler();
     const asks = (req: { prompt: string; cwd: string }) =>

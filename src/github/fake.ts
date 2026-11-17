@@ -6,6 +6,12 @@ export class FakeGitHubService implements GitHubService {
   prs = new Map<string, PullRequestInfo[]>();
   /** Bodies of created PRs, in order (for tests). */
   prBodies: string[] = [];
+  /** Preview deployments per branch (for tests): set to simulate a hosting integration. */
+  previews = new Map<string, import("./client.js").DeploymentPreview>();
+
+  async deploymentPreview(_fullName: string, ref: string): Promise<import("./client.js").DeploymentPreview> {
+    return this.previews.get(ref) ?? { state: "none" };
+  }
   comments: Array<{ repo: string; number: number; body: string }> = [];
   calls: string[] = [];
   login = "tester";

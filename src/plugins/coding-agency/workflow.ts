@@ -10,6 +10,7 @@ import { ACTION_POLICIES, type ApprovalMode } from "../../core/approvals/policy.
 import { approvalButtons, approvalCard } from "../../core/approvals/card.js";
 import { AUTOPILOT_BUDGET_EXTENSIONS, autopilotCovers } from "../../core/approvals/autopilot.js";
 import { captureScreenshot, previewUrlFor } from "./preview.js";
+import type { DeploymentPreview } from "../../github/client.js";
 import { scanDiff, scanFiles, describeFindings } from "../../security/secretScan.js";
 import { applyBaseline } from "../../quality/baseline.js";
 import type { Difficulty } from "../../core/types.js";
@@ -545,6 +546,12 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         else openIssues.push(shot.note);
       }
     }
+    // A hosting integration (e.g. Vercel's GitHub app) publishes a preview URL as a GitHub Deployment.
+    if (!previewUrl && project.repoRef && ctx.github && prNumber != null) {
+      const pv: DeploymentPreview = await ctx.github.deploymentPreview(project.repoRef, ws.branch).catch(() => ({ state: "none" as const }));
+      if (pv.state === "ready") previewUrl = pv.url;
+      else void this.watchPreview(env, task.id, implementer, ws.branch, pv);
+    }
     if (!project.repoRef) openIssues.push("GitHub 저장소가 연결되지 않아 PR 대신 로컬 브랜치에만 커밋했습니다.");
     if (cp.qualityGate?.preexisting?.length) openIssues.push(`기존 코드에서 이미 실패하던 검사(이번 변경과 무관): ${cp.qualityGate.preexisting.join(", ")}`);
     const card: ReportCard = {
@@ -666,6 +673,41 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       body: `'${task.title}' 작업을 마무리했어요. ${note}`,
       machineState: { kind: "task.done", taskId: task.id, status: "done" },
     });
+  }
+
+  /**
+   * The preview is usually still building when the PR opens: check again for a while and post the
+   * URL when it is ready. If no preview ever shows up, say once per project how to get one.
+   */
+  private async watchPreview(env: WorkflowEnv, taskId: string, speaker: Agent, branch: string, first: DeploymentPreview): Promise<void> {
+    const { ctx, project } = env;
+    try {
+      const every = Math.max(10, Number(process.env.AA_PREVIEW_POLL_MS ?? 20_000));
+      const tries = first.state === "pending" ? 30 : first.state === "none" ? 6 : 0;
+      let last = first;
+      for (let i = 0; i < tries; i++) {
+        await new Promise<void>((r) => setTimeout(r, every).unref());
+        if (ctx.lifecycle.shuttingDown) return;
+        last = await ctx.github!.deploymentPreview(project.repoRef!, branch).catch(() => last);
+        if (last.state === "ready") {
+          await ctx.repos.tasks.checkpoint(taskId, { previewUrl: last.url });
+          await env.comm.say({ user: env.user, project, speaker: { kind: "agent", agent: speaker }, listener: { kind: "user" }, situation: "report", body: `미리보기 준비됐어요 → ${last.url}`, machineState: { kind: "task.preview", taskId, data: { url: last.url } } });
+          return;
+        }
+        if (last.state === "unavailable") break;
+      }
+      if (ctx.lifecycle.shuttingDown) return;
+      const p = await ctx.repos.projects.get(project.id);
+      if (p.settings.previewHintShown) return;
+      await ctx.repos.projects.update(p.id, { settings: { ...p.settings, previewHintShown: true } });
+      const hint =
+        last.state === "unavailable"
+          ? "미리보기 주소를 읽으려면 GitHub 토큰에 'Deployments: Read' 권한을 추가해 주세요 (서버에서 aa config → GitHub)."
+          : `Vercel에 이 저장소를 연결하면 PR마다 미리보기 주소를 바로 알려 드릴게요: vercel.com → Add New → Project → ${p.repoRef} Import → Deploy. 병합하면 운영 배포도 자동으로 돼요.`;
+      await env.comm.say({ user: env.user, project: p, speaker: { kind: "moderator" }, listener: { kind: "user" }, situation: "report", body: hint, machineState: { kind: "preview.hint", projectId: p.id } });
+    } catch (e) {
+      ctx.logger.warn({ err: (e as Error).message }, "preview watch failed");
+    }
   }
 
   /** The leader asks before starting; the next message in the topic (or "알아서 해 줘") starts the work. */
@@ -872,9 +914,10 @@ export function startLine(title: string, preset?: string | null): string {
 }
 
 /** One or two lines when work is done: what was done, and a question about what is left. */
-export function doneLine(card: { feature: string; prUrl: string | null; openIssues: string[] }): string {
+export function doneLine(card: { feature: string; prUrl: string | null; previewUrl?: string | null; openIssues: string[] }): string {
   const what = card.feature.split("\n")[0]!.replace(/[.。]+$/, "").slice(0, 90);
   const lines = [`다 했어요! ${what}.${card.prUrl ? ` PR 올렸어요 → ${card.prUrl}` : ""}`];
+  if (card.previewUrl) lines.push(`미리보기 → ${card.previewUrl}`);
   if (card.openIssues.length) lines.push(`근데 ${card.openIssues[0]!.slice(0, 120)} — 이건 어떻게 할까요?`);
   return lines.join("\n");
 }
