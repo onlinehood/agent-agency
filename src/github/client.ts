@@ -52,7 +52,14 @@ export interface GitHubService {
   mergePullRequest(fullName: string, number: number, method?: "merge" | "squash" | "rebase"): Promise<{ merged: boolean; sha: string | null; message: string }>;
   commentOnPr(fullName: string, number: number, body: string): Promise<void>;
   checks(fullName: string, ref: string): Promise<CheckSummary>;
+  /**
+   * Preview URL a hosting integration (e.g. Vercel's GitHub app) published for this branch/commit as
+   * a GitHub Deployment. "none": no deployment yet; "unavailable": the token cannot read deployments.
+   */
+  deploymentPreview(fullName: string, ref: string): Promise<DeploymentPreview>;
 }
+
+export type DeploymentPreview = { state: "ready"; url: string; environment: string } | { state: "pending" | "none" } | { state: "unavailable"; reason: string };
 
 function splitRepo(fullName: string): { owner: string; repo: string } {
   const [owner, repo] = fullName.split("/");
@@ -179,6 +186,25 @@ export class OctokitGitHubService implements GitHubService {
   async commentOnPr(fullName: string, number: number, body: string): Promise<void> {
     const { owner, repo } = splitRepo(fullName);
     await (await this.oc()).issues.createComment({ owner, repo, issue_number: number, body });
+  }
+
+  async deploymentPreview(fullName: string, ref: string): Promise<DeploymentPreview> {
+    const { owner, repo } = splitRepo(fullName);
+    try {
+      const o = await this.oc();
+      const deps = (await o.repos.listDeployments({ owner, repo, ref, per_page: 10 })).data;
+      if (!deps.length) return { state: "none" };
+      for (const d of deps) {
+        const statuses = (await o.repos.listDeploymentStatuses({ owner, repo, deployment_id: d.id, per_page: 5 })).data;
+        const ok = statuses.find((x) => x.state === "success" && (x.environment_url || x.target_url));
+        if (ok) return { state: "ready", url: String(ok.environment_url || ok.target_url), environment: d.environment };
+      }
+      return { state: "pending" };
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 403 || status === 404) return { state: "unavailable", reason: "GitHub 토큰에 Deployments 읽기 권한이 없어요" };
+      throw e;
+    }
   }
 
   async checks(fullName: string, ref: string): Promise<CheckSummary> {

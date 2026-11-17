@@ -3,7 +3,7 @@ import type { Agent, Approval, OrganizationMode, PersonaPreset, Project, Task } 
 import type { User } from "../../db/repositories.js";
 import type { WorkTypePlugin, WorkflowEnv, TaskOutcome } from "../../plugins/types.js";
 import { AgentRunner } from "../agents/runner.js";
-import { Communicator } from "./communicator.js";
+import { CHAT_STYLE_KEY, Communicator } from "./communicator.js";
 import { Discussion } from "./discussion.js";
 import { DialogueStylist } from "../organization/stylist.js";
 import { runQualityGate } from "../../quality/gate.js";
@@ -12,11 +12,13 @@ import { runBackup } from "../../backup/service.js";
 import { APP_VERSION } from "../../version.js";
 import path from "node:path";
 import { classify, detectWorkType, slugify, type Classified } from "./classifier.js";
-import { isInternal, progressText, projectStatusKo, statusSummary } from "./progress.js";
+import { isInternal, progressText, projectStatusKo, reportCardText, statusSummary } from "./progress.js";
 import { allModes, modeDef, isOrganizationMode, resolveModeArg } from "../organization/modes.js";
 import { assertProjectTransition } from "../projects/lifecycle.js";
 import { budgetFor, estimateDifficulty, classifyWork, WORK_CLASS_ORDER } from "../usage/budget.js";
 import { extractJson, asStringArray } from "./llmJson.js";
+import { CAPABILITY_NOTE } from "../../plugins/coding-agency/prompts.js";
+import { TASK_INPUT_KEY } from "../../plugins/coding-agency/workflow.js";
 import { approvalButtons, approvalCard, FEEDBACK_ACTIONS } from "../approvals/card.js";
 import { ACTION_POLICIES } from "../approvals/policy.js";
 import { autopilotCovers, autopilotIntent } from "../approvals/autopilot.js";
@@ -204,6 +206,7 @@ export class Orchestrator {
     const text = m.text.trim();
     try {
       if (text && !text.startsWith("/") && (await this.consumeFeedback(user, m.chatId, m.topicId ?? null, text))) return;
+      if (text && !text.startsWith("/") && (await this.consumeTaskInput(user, m.chatId, m.topicId ?? null, text))) return;
       if (text.startsWith("/")) return await this.handleCommand(user, project ?? null, text);
       await this.handleNatural(user, project ?? null, text, m.attachments ?? []);
     } catch (e) {
@@ -322,6 +325,9 @@ export class Orchestrator {
       '- "idea": 지금 하라는 게 아니라 나중에 고려할 아이디어 → reply에 짧은 확인.',
       '- "new_project": 새 프로젝트를 만들자는 요청.',
       '"B안으로", "2번", "그걸로", "좋아"처럼 짧은 답은 직전 대화에서 AI가 내놓은 선택지나 제안에 대한 답입니다. 직전 대화에서 그 선택지를 찾아 그대로 이어가세요. 고른 안이 만들거나 고치는 일이면 "task"로 정하고, task에 고른 안의 내용을 빠짐없이 적으세요.',
+      '"응", "그래", "좋아", "ㅇㅇ"처럼 동의만 했다면 직전 AI가 추천한 안을 고른 것입니다. 추천이 없었다면 되돌리기 쉽고 안전한 쪽을 골라 진행하고, 무엇으로 진행하는지 한 줄로 알리세요. 같은 질문을 다시 묻지 마세요.',
+      '선택지를 내놓을 때는 항상 추천안 하나를 "추천: 2번"처럼 표시하세요.',
+      `할 수 있는 일만 제안하세요. ${CAPABILITY_NOTE}`,
       '애매하면 "answer"로 정하고 무엇을 원하는지 짧게 되물으세요. 작업을 직접 실행하지는 마세요.',
       '형식: {"intent": "answer|task|idea|new_project", "reply": "...", "task": "...", "title": "...", "project": "..."}',
       `\n${context}`,
@@ -407,7 +413,7 @@ export class Orchestrator {
       speaker: { kind: "moderator" },
       listener: { kind: "user" },
       situation: "instruction",
-      body: `'${title}' 작업으로 접수했어요.${names.length ? ` ${names.join(", ")}을(를) 우선 배정할게요.` : ""} 난이도 예상: ${difficulty}.`,
+      body: `'${title}' 접수했어요.${names.length ? ` ${names.join(", ")}이(가) 맡아요.` : ""}`,
       buttons: [[{ text: "⬆️ 우선순위 올리기", data: `t:prio:${task.id}` }, { text: "🛑 취소", data: `t:cancel:${task.id}` }], ...((await this.ctx.repos.projects.get(project.id)).settings.autopilot ? [] : [[{ text: "🤖 끝까지 자동 진행", data: `p:auto:${project.id}:on` }]])],
       machineState: { kind: "task.created", taskId: task.id, projectId: project.id },
     });
@@ -503,6 +509,7 @@ export class Orchestrator {
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 아래 맥락을 참고해 질문에 답하세요. 모르면 모른다고 답하고, 실행하지 않은 일을 했다고 말하지 마세요.",
       "명확한 개발 지시가 아니라면 작업을 시작하지 마세요. 필요한 경우 어떤 지시를 주면 되는지 안내하세요.",
+      `할 수 있는 일만 제안하세요. ${CAPABILITY_NOTE}`,
       NO_TOOLS_NOTE,
       `\n${context}`,
       `\n${style}`,
@@ -796,6 +803,31 @@ export class Orchestrator {
       if (parts[0] === "t") {
         const [, op, taskId] = parts;
         if (op === "cancel") return { toast: await this.cancelTask(user, taskId!) };
+        if (op === "report") {
+          const t = await this.ctx.repos.tasks.get(taskId!);
+          const card = t.checkpoint.reportCard as Parameters<typeof reportCardText>[0] | undefined;
+          if (!card) return { toast: "보고서가 아직 없어요." };
+          const p = await this.ctx.repos.projects.get(t.projectId);
+          await this.comm.say({ user, project: p, speaker: { kind: "system" }, listener: { kind: "user" }, situation: "report", body: reportCardText(card), preformatted: true, machineState: { kind: "report.card.shown", taskId: t.id } });
+          return { toast: "보고서를 보냈어요." };
+        }
+        if (op === "skipask") {
+          // Go on without what was asked: open the PR and record the item there.
+          const t = await this.ctx.repos.tasks.get(taskId!);
+          const p = await this.ctx.repos.projects.get(t.projectId);
+          const awaiting = (t.checkpoint.awaitingUser as { items?: string[]; resumeStage?: string } | undefined) ?? {};
+          await this.ctx.repos.settings.delete("user", user.id, TASK_INPUT_KEY);
+          if (awaiting.resumeStage === "implementation") {
+            // "알아서 해 줘" to the leader's questions: start with the recommended defaults.
+            const nt = await this.ctx.repos.tasks.update(t.id, { state: "queued", stage: "implementation", blockedReason: null, description: `${t.description}\n\n[사용자] 질문(${(awaiting.items ?? []).join(" / ")})은 알아서 정해 달라고 함 — 합리적인 기본값으로 진행`, checkpoint: { awaitingUser: null } });
+            await this.scheduler?.enqueueTask(nt, p);
+            return { toast: "추천대로 진행할게요." };
+          }
+          const items = (awaiting.items ?? []).map((i) => `${i} (사용자 확인 필요)`);
+          const nt = await this.ctx.repos.tasks.update(t.id, { state: "queued", stage: "pr", blockedReason: null, checkpoint: { awaitingUser: null, unresolvedReview: items } });
+          await this.scheduler?.enqueueTask(nt, p);
+          return { toast: "그 부분은 빼고 진행할게요." };
+        }
         if (op === "retry") {
           await this.retryTask(user, taskId!);
           return { toast: "재시도합니다." };
@@ -843,6 +875,26 @@ export class Orchestrator {
     if (approval.taskId) await this.ctx.repos.tasks.update(approval.taskId, { state: "blocked", blockedReason: "사용자 수정 의견 대기" });
     if (approval.action === "create_project" && approval.projectId) await this.ctx.repos.projects.update(approval.projectId, { status: "archived", archivedAt: new Date().toISOString() });
     if (approval.projectId) await this.refreshProgress(approval.projectId);
+  }
+
+  /** An agent asked the user for something (a deploy URL, an account…): this message is the answer. */
+  async consumeTaskInput(user: User, chatId: string, topicId: number | null, text: string): Promise<boolean> {
+    const pending = await this.ctx.repos.settings.get<{ taskId: string; projectId: string; chatId: string | null; topicId: number | null }>("user", user.id, TASK_INPUT_KEY);
+    if (!pending || pending.chatId !== chatId || (pending.topicId ?? null) !== topicId) return false;
+    const task = await this.ctx.repos.tasks.find(pending.taskId);
+    await this.ctx.repos.settings.delete("user", user.id, TASK_INPUT_KEY);
+    if (!task || task.state !== "blocked" || !task.checkpoint.awaitingUser) return false;
+    const project = await this.ctx.repos.projects.get(task.projectId);
+    const awaiting = task.checkpoint.awaitingUser as { items?: string[]; resumeStage?: string };
+    const asked = (awaiting.items ?? []).join(" / ");
+    const nt =
+      awaiting.resumeStage === "implementation"
+        ? await this.ctx.repos.tasks.update(task.id, { state: "queued", stage: "implementation", blockedReason: null, description: `${task.description}\n\n[사용자 답변] ${asked} → ${text}`, checkpoint: { awaitingUser: null } })
+        : await this.ctx.repos.tasks.update(task.id, { state: "queued", stage: "fix", blockedReason: null, checkpoint: { awaitingUser: null, lastFeedback: `사용자 답변: ${text}\n(요청했던 것: ${asked}) 답변 내용을 반영하세요.` } });
+    await this.ctx.memory.remember(project.id, "decision", `사용자 제공 (${asked}): ${text}`, { certainty: "confirmed", sourceRefs: [task.id] });
+    await this.scheduler?.enqueueTask(nt, project);
+    await this.moderatorSays(user, project, awaiting.resumeStage === "implementation" ? "알겠어요, 그렇게 시작할게요." : "고마워요, 이어서 할게요.", "task.user_input");
+    return true;
   }
 
   /** If a "수정 요청" is waiting in this chat/topic, treat the message as its feedback. */
@@ -1163,6 +1215,14 @@ export class Orchestrator {
         await this.proposeImport(user, `${m[1]}/${m[2]}`, []);
         return;
       }
+      case "/chat": {
+        // chat: only starts, results, questions and conversation; log: every step as before.
+        if (arg === "log" || arg === "chat") {
+          await this.ctx.repos.settings.set("user", user.id, CHAT_STYLE_KEY, arg);
+          return say(arg === "log" ? "이제 작업 단계마다 기록을 올릴게요. 대화만 보려면 /chat chat" : "이제 대화처럼 시작·결과·질문만 올릴게요. 단계별 기록은 고정 메시지와 /status에 있어요.");
+        }
+        return say(`지금: ${(await this.comm.chatStyle(user)) === "log" ? "단계별 기록(log)" : "대화(chat)"}\n/chat chat — 시작·결과·질문만 · /chat log — 단계마다 기록`);
+      }
       case "/auto":
         return this.autopilotCommand(user, project, arg === "off" ? "off" : arg === "on" || !arg ? (arg ? "on" : "status") : "status");
       case "/approvals":
@@ -1416,6 +1476,7 @@ export class Orchestrator {
 }
 
 export const HELP_TEXT = [
+  "/chat [chat|log] — 대화처럼 짧게(기본) 또는 단계마다 기록",
   "/auto [on|off] — 자동 진행 (위험한 작업만 승인 요청). \"자동으로 진행해\"라고 말해도 됩니다",
   "🤖 AgentAgency — Your Agents. Your Agency.",
   "",

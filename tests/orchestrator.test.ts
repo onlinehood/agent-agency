@@ -27,6 +27,11 @@ describe("orchestrator", () => {
     expect(text).toContain("클로드: 습관 기록 앱 어떠세요?");
     expect(text).toContain("코덱스: 습관 기록 앱 어떠세요?");
     expect(text).not.toContain("아이디어 후보 목록에 저장");
+    // Messenger-style discussion: no "의견을 모아볼게요" opener, one-line turns that see the chat so far.
+    expect(text).not.toContain("의견을 모아볼게요");
+    const turnPrompts = app.claude.calls.concat(app.codex.calls).filter((r) => r.prompt.includes('"position"'));
+    expect(turnPrompts[0]!.prompt).toContain("## 단톡방처럼");
+    expect(turnPrompts.some((r) => r.prompt.includes("클로드: 클로드: 습관 기록 앱 어떠세요?"))).toBe(true);
     expect(await app.ctx.repos.ideas.list(null)).toHaveLength(0);
     // A real idea statement is still filed.
     await app.orchestrator.handleMessage(msg("나중에 다크모드 있으면 좋겠다"));
@@ -232,8 +237,8 @@ describe("orchestrator", () => {
       await app.orchestrator.handleMessage(msg(`/mode ${mode}`));
     }
     await app.orchestrator.handleMessage(msg("/mode construction"));
-    expect(app.out.lounge.at(-1)!.msg.text).toContain("건물주님");
-    expect(app.out.lounge.at(-1)!.msg.header).toContain("현장소장");
+    expect(app.out.lounge.at(-1)!.msg.header).toBe("🏗️ 현장소장"); // name only, like a messenger
+    expect(app.out.lounge.at(-1)!.msg.text).toContain("건설현장 모드로 바꿨어요");
     expect((await app.ctx.repos.memories.list(project.id)).length).toBe(before.mem.length);
     expect((await app.ctx.repos.tasks.listByProject(project.id)).length).toBe(before.tasks.length);
     expect((await app.ctx.repos.agents.get(claude.id)).name).toBe("클로드");

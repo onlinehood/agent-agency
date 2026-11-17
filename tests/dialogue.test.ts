@@ -63,17 +63,17 @@ describe("role-aware dialogue (PRD §2.2)", () => {
     const out = (["corporate", "construction", "campus"] as const).map((mode) =>
       render({ mode, speaker: { name: "클로드", orgRole: "member" }, listener: { name: "대표", orgRole: "user" }, situation: "report", ...facts }),
     );
-    expect(out[0]!.text).toContain("CEO님");
-    expect(out[0]!.text).toContain("통과했습니다");
-    expect(out[1]!.text).toContain("건물주님");
-    expect(out[2]!.text).toContain("교수님");
+    // Messenger style: no "CEO님," in front; the worldview shows in the register and the header.
+    expect(out[0]!.text).toBe("테스트를 모두 통과했습니다.");
+    expect(out[1]!.text).toBe("테스트를 모두 통과했어요.");
+    expect(out[2]!.text).toBe("테스트를 모두 통과했습니다.");
     for (const o of out) expect(o.machineState).toEqual(facts.machineState);
     expect(out[1]!.speakerLabel).toContain(MODES.construction.titles.member);
   });
 
   it("addresses a whole team with a group term, not a name", () => {
     const r = render({ mode: "campus", speaker: { name: "조교", orgRole: "moderator" }, listener: { name: "팀", orgRole: "member" }, situation: "instruction", ambiguousAudience: true, body: "배정할게요.", machineState: { kind: "x" } });
-    expect(r.text.startsWith("여러분,")).toBe(true);
+    expect(r.text).toBe("배정할게요."); // no "여러분," prefix in messenger style
   });
 
   it("ending conversion is light-touch", () => {

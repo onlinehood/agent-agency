@@ -92,6 +92,8 @@ export interface ProjectSettings {
   approvalMode?: "default" | "strict" | "auto_within_scope";
   /** 자동 진행: routine approvals are granted automatically (risky ones still ask). */
   autopilot?: boolean;
+  /** The "connect Vercel for previews" hint was already shown once. */
+  previewHintShown?: boolean;
   previewUrl?: string;
   testCommand?: string;
   lintCommand?: string;

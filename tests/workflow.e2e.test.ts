@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 import { makeTestApp, seedRemote, seedUserAndAgents, codingHandler, ADMIN_TG, type TestApp } from "./helpers.js";
 
@@ -16,11 +18,187 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("Vercel preview: posted when a build finishes, and a one-time hint when Vercel is not connected", async () => {
+    process.env.AA_PREVIEW_POLL_MS = "20";
+    try {
+      const h = codingHandler();
+      app = await makeTestApp({ claude: h, codex: h });
+      const { user, claude, codex } = await seedUserAndAgents(app);
+      const project = await activeProject(app, user.id, [
+        { agentId: claude.id, role: "leader" },
+        { agentId: codex.id, role: "reviewer" },
+      ]);
+      const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+      const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      // 1) Not connected: nothing found → one hint for the project.
+      await say("hello 함수를 추가해줘");
+      await app.scheduler.drain(60_000);
+      await wait(400);
+      expect(app.out.allText()).toContain("Vercel에 이 저장소를 연결하면 PR마다 미리보기 주소를 바로 알려 드릴게요");
+
+      // 2) Connected, still building: the URL is posted when the deployment is ready.
+      let calls = 0;
+      app.github.deploymentPreview = async (_repo: string, ref: string) => (++calls < 3 ? { state: "pending" as const } : { state: "ready" as const, url: `https://${ref.replace(/\//g, "-")}.vercel.app`, environment: "Preview" });
+      await say("hello 함수에 설명 주석을 추가해줘");
+      await app.scheduler.drain(60_000);
+      await wait(400);
+      expect(app.out.allText()).toMatch(/미리보기 준비됐어요 → https:\/\/.*\.vercel\.app/);
+
+      // The hint is shown only once per project.
+      expect(app.out.allText().split("Vercel에 이 저장소를 연결하면").length - 1).toBe(1);
+    } finally {
+      delete process.env.AA_PREVIEW_POLL_MS;
+    }
+  }, 180_000);
+
+  it("the done line carries the preview URL when it is already ready", async () => {
+    const h = codingHandler();
+    app = await makeTestApp({ claude: h, codex: h });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    app.github.deploymentPreview = async () => ({ state: "ready" as const, url: "https://demo-git-feature.vercel.app", environment: "Preview" });
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const done = app.out.allText().split("\n---\n").find((m) => m.includes("다 했어요!"))!;
+    expect(done).toContain("미리보기 → https://demo-git-feature.vercel.app");
+  }, 120_000);
+
+  it("the leader asks a real question in chat before starting; the answer goes into the work", async () => {
+    const base = codingHandler();
+    const asks = (req: { prompt: string; cwd: string }) =>
+      req.prompt.includes("프로젝트 리더입니다")
+        ? JSON.stringify({ summary: "hello 함수 추가", acceptance_criteria: ["hello()가 인사말을 반환"], difficulty: "easy", architecture_change: false, scope_expansion: false, core_feature: false, risks: [], questions: ["인사말은 뭐로 할까요? 추천: hello"], message: "질문 하나만요." })
+        : base(req as never);
+    app = await makeTestApp({ claude: asks as never, codex: asks as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+    await say("hello 함수를 추가해줘");
+    await app.scheduler.drain(60_000);
+    let [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("blocked");
+    expect(app.out.allText()).toContain("시작 전에 하나만 물어보겠습니다.\n• 인사말은 뭐로 할까요? 추천: hello"); // corporate → formal ending
+    expect((await app.ctx.repos.approvals.listPending(user.id)).some((a) => a.action === "plan_scope")).toBe(false); // no approval card
+    await say("hello로 해");
+    await app.scheduler.drain(60_000);
+    task = await app.ctx.repos.tasks.get(task!.id);
+    expect(task.description).toContain("[사용자 답변] 인사말은 뭐로 할까요? 추천: hello → hello로 해");
+    expect(task.prRef).toContain("/pull/1");
+  }, 180_000);
+
+  it("an empty attempt on code that already does the job finishes the task after review, without a PR", async () => {
+    const h = codingHandler();
+    const already = (req: { prompt: string; cwd: string }) => (req.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다") ? JSON.stringify({ summary: "이미 구현되어 있음", changes: [], tests_added: [], open_issues: [], message: "이미 돼 있어요." }) : h(req as never));
+    app = await makeTestApp({ claude: already as never, codex: already as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수가 있는지 확인하고 없으면 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("done");
+    expect(task!.prRef).toBeNull();
+    expect(app.out.allText()).toContain("바꿀 것이 없었어요");
+    expect(app.out.allText()).not.toContain("파일 변경이 없었습니다");
+  }, 120_000);
+
+  it("something only the user can do (a real deploy URL) is asked once with how-to steps; the answer continues the task", async () => {
+    const base = codingHandler();
+    let reviews = 0;
+    const needsDeploy = (req: { prompt: string; cwd: string }) => {
+      if (!req.prompt.includes("코드 리뷰어")) return base(req as never);
+      reviews++;
+      return reviews === 1
+        ? JSON.stringify({ approved: false, summary: "배포 주소 없음", issues: [{ severity: "major", description: "README에 실제 Vercel Production URL이 없습니다", file: "README.md" }], message: "배포 주소가 필요해요." })
+        : JSON.stringify({ approved: true, summary: "좋음", issues: [], message: "좋아요." });
+    };
+    app = await makeTestApp({ claude: needsDeploy as never, codex: needsDeploy as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+    await say("hello 함수를 추가하고 README에 배포 주소를 적어줘");
+    await app.scheduler.drain(60_000);
+    let [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("blocked");
+    expect(task!.attempts).toBe(1); // asked right away, no retry rounds
+    const text = app.out.allText();
+    expect(text).toContain("이건 제가 직접 할 수 없어서 도와주셔야 해요");
+    expect(text).toContain("vercel.com 로그인 → Add New → Project");
+    expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `t:skipask:${task!.id}`))).toBe(true);
+    // The user's next message in the topic is the answer; the task continues with it.
+    await say("https://simple-calc.vercel.app");
+    await app.scheduler.drain(60_000);
+    task = await app.ctx.repos.tasks.get(task!.id);
+    expect(task.prRef).toContain("/pull/1");
+    const fixPrompt = app.claude.calls.concat(app.codex.calls).filter((r) => r.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다")).at(-1)!.prompt;
+    expect(fixPrompt).toContain("사용자 답변: https://simple-calc.vercel.app");
+  }, 180_000);
+
+  it("⏭ skips what was asked: the PR opens with the item recorded", async () => {
+    const base = codingHandler();
+    const needsDeploy = (req: { prompt: string; cwd: string }) =>
+      req.prompt.includes("코드 리뷰어") ? JSON.stringify({ approved: false, summary: "배포 필요", issues: [], needs_user: [{ what: "Vercel에 배포하고 주소 알려 주기" }], message: "배포는 부탁드려요." }) : base(req as never);
+    app = await makeTestApp({ claude: needsDeploy as never, codex: needsDeploy as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("blocked");
+    expect((await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `t:skipask:${task!.id}`, chatId: project.chatId!, messageId: 1 })).toast).toContain("빼고 진행");
+    await app.scheduler.drain(60_000);
+    expect((await app.ctx.repos.tasks.get(task!.id)).prRef).toContain("/pull/1");
+    expect(app.github.prBodies.at(-1)).toContain("Vercel에 배포하고 주소 알려 주기 (사용자 확인 필요)");
+  }, 180_000);
+
+  it("the same review objection twice stops the fix loop and opens the PR with the objection recorded", async () => {
+    const base = codingHandler();
+    let n = 0;
+    const stubborn = (req: { prompt: string; cwd: string }) => {
+      if (!req.prompt.includes("코드 리뷰어")) return base(req as never);
+      n++;
+      return JSON.stringify({ approved: false, summary: "에러 문구가 너무 기술적", issues: [{ severity: "major", description: `0으로 나눌 때 에러 문구가 사용자에게 너무 기술적입니다 (${n}차)`, file: "hello.js" }], message: "문구를 쉽게 바꿔 주세요." });
+    };
+    app = await makeTestApp({ claude: stubborn as never, codex: stubborn as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(90_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(n).toBe(2); // one fix round, then it stops
+    expect(task!.prRef).toContain("/pull/1");
+    expect(app.out.allText()).toContain("리뷰어가 같은 지적을 반복해서 수정을 멈췄어요");
+    expect(app.github.prBodies.at(-1)).toContain("리뷰에서 반복된 지적");
+  }, 120_000);
+
   it("an implementer that keeps ending with no file changes hands the task to another agent", async () => {
     const writes = codingHandler();
     const neverWrites = (req: { prompt: string; cwd: string }) =>
       req.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다") ? JSON.stringify({ summary: "샌드박스 오류로 적용 못 함", changes: [], tests_added: [], open_issues: ["bwrap"], message: "적용이 안 돼요." }) : writes(req as never);
-    app = await makeTestApp({ claude: writes, codex: neverWrites as never });
+    // A realistic reviewer: with no diff and no hello.js, the existing code does not do the job.
+    const reviewer = (req: { prompt: string; cwd: string }) =>
+      req.prompt.includes("diff 없음") && !fs.existsSync(path.join(req.cwd, "hello.js"))
+        ? JSON.stringify({ approved: false, summary: "hello 함수가 없습니다", issues: [{ severity: "major", description: "hello.js가 없습니다" }], message: "아직 없어요." })
+        : writes(req as never);
+    app = await makeTestApp({ claude: reviewer as never, codex: neverWrites as never });
     const { user, claude, codex } = await seedUserAndAgents(app);
     const project = await activeProject(app, user.id, [
       { agentId: claude.id, role: "leader" },
@@ -69,7 +247,9 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     const second = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal && t.id !== task.id)[0]!;
     expect(second.state).toBe("done");
     expect(app.out.project.filter((m) => m.msg.buttons?.flat().some((b) => b.data.startsWith("a:ok:"))).length).toBe(cardsBefore);
-    expect(app.out.allText()).toContain("🤖 자동 진행 — PR 병합");
+    // Auto-approvals are work-log steps: kept in history, not posted in chat style.
+    expect(app.out.allText()).not.toContain("🤖 자동 진행 — PR 병합");
+    expect((await app.ctx.repos.conversations.list(project.id, 500)).some((m) => m.kind === "approval.auto" && m.renderedText.includes("PR 병합"))).toBe(true);
     expect(await app.ctx.repos.approvals.listPending(user.id)).toHaveLength(0);
   }, 180_000);
 
@@ -93,7 +273,7 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     expect(task!.attempts).toBe(1); // no extra fix rounds
     // The review prompt tells the reviewer not to reject only because it could not run commands.
     expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("명령을 직접 실행하지 못했더라도 그것만으로 반려하지 마세요");
-    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("코드로 충족할 수 없는 절차 항목");
+    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("코드로 충족할 수 없는 항목");
   }, 120_000);
 
   it("runs plan → implement → gate → review → PR → merge with approval", async () => {
@@ -130,7 +310,15 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     expect(done.state).toBe("done");
     expect(app.github.calls.filter((c) => c.startsWith("mergePullRequest"))).toHaveLength(1);
 
-    // Report card + pinned progress were produced; machine state stored separately from text.
+    // Chat style: people see a start line and a done line from the implementer, not every step.
+    const chat = app.out.allText();
+    expect(chat).toMatch(/(제가 맡을게요|바로 들어갑니다|제가 해 볼게요)/);
+    expect(chat).toContain("다 했어요!");
+    expect(chat).not.toContain("품질 게이트 통과");
+    expect(chat).not.toContain("결과 보고");
+    // The full report is one tap away.
+    expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `t:report:${task!.id}`))).toBe(true);
+    await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `t:report:${task!.id}`, chatId: project.chatId!, messageId: 2 });
     expect(app.out.allText()).toContain("결과 보고");
     expect(app.out.pinned.get(project.id)).toContain("Demo");
     const convo = await app.ctx.repos.conversations.list(project.id, 200);

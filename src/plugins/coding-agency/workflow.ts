@@ -10,6 +10,7 @@ import { ACTION_POLICIES, type ApprovalMode } from "../../core/approvals/policy.
 import { approvalButtons, approvalCard } from "../../core/approvals/card.js";
 import { AUTOPILOT_BUDGET_EXTENSIONS, autopilotCovers } from "../../core/approvals/autopilot.js";
 import { captureScreenshot, previewUrlFor } from "./preview.js";
+import type { DeploymentPreview } from "../../github/client.js";
 import { scanDiff, scanFiles, describeFindings } from "../../security/secretScan.js";
 import { applyBaseline } from "../../quality/baseline.js";
 import type { Difficulty } from "../../core/types.js";
@@ -45,6 +46,8 @@ interface ReviewJson {
   approved?: boolean;
   summary?: string;
   issues?: Array<{ severity?: string; description?: string; file?: string }>;
+  /** Things only the user can do (deploy, a real URL, an account) — asked instead of retried. */
+  needs_user?: Array<{ what?: string; how?: string }>;
   message?: string;
 }
 
@@ -165,6 +168,16 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         body: `'${task.title}' 작업을 배정할게요.\n${asg.reasons.join("\n")}`,
         machineState: { kind: "task.assigned", taskId: task.id, data: { implementer: asg.implementer.id, reviewer: asg.reviewer?.id ?? null } },
       });
+      // The one line people see at the start: the implementer, in character.
+      await env.comm.say({
+        user: env.user,
+        project,
+        speaker: { kind: "agent", agent: asg.implementer },
+        listener: { kind: "user" },
+        situation: "report",
+        body: startLine(task.title, (await ctx.repos.personas.find(asg.implementer.personaId))?.preset),
+        machineState: { kind: "task.started", taskId: task.id },
+      });
     }
     const implementer = await this.agentOrNull(env, task.assignedAgentId);
     if (!implementer) return this.block(env, task, "담당 에이전트를 찾을 수 없습니다.");
@@ -257,7 +270,10 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       const withinScope = !plan.scope_expansion && !plan.architecture_change;
       if (plan.architecture_change) return this.requestApproval(env, task, "architecture_change", `주요 아키텍처 변경이 포함된 계획입니다.\n${plan.summary ?? ""}\n위험: ${asStringArray(plan.risks).join(", ") || "없음"}`, {}, out.agent);
       if (plan.scope_expansion) return this.requestApproval(env, task, "scope_expansion", `요청 범위를 넘어서는 기능 추가가 포함됩니다.\n${plan.summary ?? ""}`, {}, out.agent);
-      if (questions.length || ctx.approvals.needsApproval("plan_scope", mode, { withinApprovedScope: withinScope })) {
+      // Real questions are asked in chat, not as an approval card: the answer (or "알아서") starts the work.
+      // In 자동 진행 the user asked not to be interrupted: go with the recommended defaults.
+      if (questions.length && !(await ctx.repos.projects.get(project.id)).settings.autopilot) return this.askQuestions(env, task, out.agent, questions);
+      if (ctx.approvals.needsApproval("plan_scope", mode, { withinApprovedScope: withinScope })) {
         return this.requestApproval(env, task, "plan_scope", `${plan.summary ?? task.title}\n수락 기준:\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}${questions.length ? `\n\n확인이 필요한 질문:\n${questions.map((q) => `- ${q}`).join("\n")}` : ""}`, {}, out.agent);
       }
     }
@@ -319,6 +335,13 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         if (!sha && !(await ctx.workspaces.git.changedFiles(ws.dir, ws.base)).length) {
           await ctx.memory.remember(project.id, "lesson", `'${task.title}' 시도 ${task.attempts}: 코드 변경 없이 종료됨`, { sourceRefs: [task.id, out.executionId] });
           const streak = Number(task.checkpoint.noChangeStreak ?? 0) + 1;
+          // First empty attempt: maybe nothing needs changing (the code already does it). Let the
+          // reviewer judge the existing code; approval finishes the task, a rejection gives the
+          // next attempt concrete feedback instead of "you changed nothing".
+          if (streak === 1) {
+            task = await this.setState(env, task, { stage: "review", state: "review", checkpoint: { noChangeStreak: streak, noDiff: true } });
+            continue;
+          }
           // The same agent keeps ending without touching a file (e.g. its executor cannot write in
           // this environment): hand the work to another agent instead of looping until the budget.
           const alt = streak >= 2 ? await ctx.team.alternativeFor(project, out.agent) : null;
@@ -347,7 +370,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         }
         task = await this.setState(env, task, {
           stage: "testing",
-          checkpoint: { noChangeStreak: 0, commitSha: sha ?? task.checkpoint.commitSha, impl: { summary: impl.summary ?? "", changes: asStringArray(impl.changes), testsAdded: asStringArray(impl.tests_added), openIssues: asStringArray(impl.open_issues) } },
+          checkpoint: { noChangeStreak: 0, noDiff: false, commitSha: sha ?? task.checkpoint.commitSha, impl: { summary: impl.summary ?? "", changes: asStringArray(impl.changes), testsAdded: asStringArray(impl.tests_added), openIssues: asStringArray(impl.open_issues) } },
         });
         await env.comm.say({
           user: env.user,
@@ -409,7 +432,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
           agent: reviewer,
           task,
           purpose: "review",
-          prompt: this.reviewPromptFor(task, diff, gateText, style, implementer.name),
+          prompt: this.reviewPromptFor(task, diff, gateText, style, implementer.name) + (task.checkpoint.noDiff ? "\n\n## 참고\n이번 시도에서 구현 담당이 바꾼 코드가 없습니다(diff 없음). 현재 저장소의 코드가 이미 작업과 수용 기준을 충족하는지 직접 확인해 판단하세요. 충족하면 approved=true로 승인하고, 부족하면 무엇을 고쳐야 하는지 구체적으로 적으세요." : ""),
           cwd: ws.dir,
           mode: "readonly",
           sandbox: ws.sandbox,
@@ -442,11 +465,42 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
           machineState: { kind: "review.verdict", taskId: task.id, executionId: out.executionId, status: approved ? "approved" : "changes_requested", data: { issues: issues.length } },
         });
         if (!approved) {
+          // What is left needs the user (deploy, a real URL, an account): ask once with how-to
+          // steps instead of sending the implementer round after round at something it cannot do.
+          const needsUser = [
+            ...(rj?.needs_user ?? []).filter((n) => n && typeof n.what === "string" && n.what.trim()).map((n) => ({ what: String(n.what), how: typeof n.how === "string" ? n.how : undefined })),
+            ...issues.filter((i) => i.severity !== "minor" && EXTERNAL_WORK.test(i.description)).map((i) => ({ what: i.description, how: undefined as string | undefined })),
+          ];
+          const codeBlocking = issues.filter((i) => i.severity !== "minor" && !EXTERNAL_WORK.test(i.description));
+          if (needsUser.length && !codeBlocking.length) return this.askUser(env, task, implementer, needsUser);
+          // The same objection again after a fix round means the fix loop cannot resolve it (often a
+          // criterion code cannot meet, e.g. a real deployment URL). Stop looping: open the PR with
+          // the objection recorded, and let the user decide at the merge step.
+          const sig = reviewSignature(issues, verdict.summary);
+          const prevSig = String(task.checkpoint.lastRejectSignature ?? "");
+          if (prevSig && similarity(sig, prevSig) >= 0.5) {
+            const unresolved = issues.filter((i) => i.severity !== "minor").map((i) => `${i.description}${i.file ? ` (${i.file})` : ""}`);
+            await env.comm.say({
+              user: env.user,
+              project,
+              speaker: { kind: "moderator" },
+              listener: { kind: "user" },
+              situation: "report",
+              body: `리뷰어가 같은 지적을 반복해서 수정을 멈췄어요. PR을 열고 남은 지적은 PR에 적어 둘게요: ${unresolved[0] ?? verdict.summary}`.slice(0, 600),
+              machineState: { kind: "review.repeated", taskId: task.id },
+            });
+            await this.setState(env, task, { stage: "pr", checkpoint: { reviewVerdict: verdict, unresolvedReview: unresolved, lastRejectSignature: null } });
+            return null;
+          }
           const fb = `교차 리뷰에서 수정 요청이 있었습니다: ${verdict.summary}\n${issues.map((i) => `- [${i.severity}] ${i.description}${i.file ? ` (${i.file})` : ""}`).join("\n")}`;
-          task = await this.setState(env, task, { stage: "fix", checkpoint: { reviewVerdict: verdict, lastFeedback: fb } });
+          task = await this.setState(env, task, { stage: "fix", checkpoint: { reviewVerdict: verdict, lastFeedback: fb, lastRejectSignature: sig } });
           continue;
         }
-        await this.setState(env, task, { stage: "pr", checkpoint: { reviewVerdict: verdict } });
+        if (task.checkpoint.noDiff && !(await ctx.workspaces.git.changedFiles(ws.dir, ws.base)).length) {
+          await this.complete(env, await this.setState(env, task, { checkpoint: { reviewVerdict: verdict, noDiff: false } }), "기존 코드가 이미 작업 내용을 충족해서 바꿀 것이 없었어요 (리뷰 확인).");
+          return { kind: "done" };
+        }
+        await this.setState(env, task, { stage: "pr", checkpoint: { reviewVerdict: verdict, noDiff: false } });
         return null;
       }
       return null;
@@ -492,6 +546,12 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         else openIssues.push(shot.note);
       }
     }
+    // A hosting integration (e.g. Vercel's GitHub app) publishes a preview URL as a GitHub Deployment.
+    if (!previewUrl && project.repoRef && ctx.github && prNumber != null) {
+      const pv: DeploymentPreview = await ctx.github.deploymentPreview(project.repoRef, ws.branch).catch(() => ({ state: "none" as const }));
+      if (pv.state === "ready") previewUrl = pv.url;
+      else void this.watchPreview(env, task.id, implementer, ws.branch, pv);
+    }
     if (!project.repoRef) openIssues.push("GitHub 저장소가 연결되지 않아 PR 대신 로컬 브랜치에만 커밋했습니다.");
     if (cp.qualityGate?.preexisting?.length) openIssues.push(`기존 코드에서 이미 실패하던 검사(이번 변경과 무관): ${cp.qualityGate.preexisting.join(", ")}`);
     const card: ReportCard = {
@@ -516,6 +576,18 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       body: reportCardText(card),
       preformatted: true,
       machineState: { kind: "report.card", taskId: task.id, data: { prUrl, previewUrl } },
+    });
+    await ctx.repos.tasks.checkpoint(task.id, { reportCard: card });
+    // What people see at the end: the implementer says what was done and asks about what is left.
+    await env.comm.say({
+      user: env.user,
+      project,
+      speaker: { kind: "agent", agent: implementer },
+      listener: { kind: "user" },
+      situation: "report",
+      body: doneLine(card),
+      buttons: [[{ text: "📋 자세히", data: `t:report:${task.id}` }]],
+      machineState: { kind: "task.finished", taskId: task.id, data: { prUrl } },
     });
     env.ctx.events.emit("report.ready", { projectId: project.id, taskId: task.id, card });
     await this.afterReport(env, task, ws).catch((e) => ctx.logger.warn({ err: (e as Error).message }, "afterReport failed"));
@@ -565,6 +637,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
     if (cp.qualityGate) lines.push(`\n## 품질 게이트\n${summarizeGate(cp.qualityGate)}`);
     if (cp.reviewVerdict) lines.push(`\n## 교차 리뷰\n${cp.reviewVerdict.approved ? "승인" : "수정 필요"} — ${cp.reviewVerdict.summary}`);
     if (cp.impl?.openIssues?.length) lines.push(`\n## 미해결 이슈\n${cp.impl.openIssues.map((c: string) => `- ${c}`).join("\n")}`);
+    if (cp.unresolvedReview?.length) lines.push(`\n## 리뷰에서 반복된 지적 (수정 루프로 해결되지 않아 남김)\n${cp.unresolvedReview.map((c: string) => `- ${c}`).join("\n")}`);
     lines.push(`\n---\n_AgentAgency task \`${task.id}\`_`);
     return lines.join("\n");
   }
@@ -600,6 +673,79 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       body: `'${task.title}' 작업을 마무리했어요. ${note}`,
       machineState: { kind: "task.done", taskId: task.id, status: "done" },
     });
+  }
+
+  /**
+   * The preview is usually still building when the PR opens: check again for a while and post the
+   * URL when it is ready. If no preview ever shows up, say once per project how to get one.
+   */
+  private async watchPreview(env: WorkflowEnv, taskId: string, speaker: Agent, branch: string, first: DeploymentPreview): Promise<void> {
+    const { ctx, project } = env;
+    try {
+      const every = Math.max(10, Number(process.env.AA_PREVIEW_POLL_MS ?? 20_000));
+      const tries = first.state === "pending" ? 30 : first.state === "none" ? 6 : 0;
+      let last = first;
+      for (let i = 0; i < tries; i++) {
+        await new Promise<void>((r) => setTimeout(r, every).unref());
+        if (ctx.lifecycle.shuttingDown) return;
+        last = await ctx.github!.deploymentPreview(project.repoRef!, branch).catch(() => last);
+        if (last.state === "ready") {
+          await ctx.repos.tasks.checkpoint(taskId, { previewUrl: last.url });
+          await env.comm.say({ user: env.user, project, speaker: { kind: "agent", agent: speaker }, listener: { kind: "user" }, situation: "report", body: `미리보기 준비됐어요 → ${last.url}`, machineState: { kind: "task.preview", taskId, data: { url: last.url } } });
+          return;
+        }
+        if (last.state === "unavailable") break;
+      }
+      if (ctx.lifecycle.shuttingDown) return;
+      const p = await ctx.repos.projects.get(project.id);
+      if (p.settings.previewHintShown) return;
+      await ctx.repos.projects.update(p.id, { settings: { ...p.settings, previewHintShown: true } });
+      const hint =
+        last.state === "unavailable"
+          ? "미리보기 주소를 읽으려면 GitHub 토큰에 'Deployments: Read' 권한을 추가해 주세요 (서버에서 aa config → GitHub)."
+          : `Vercel에 이 저장소를 연결하면 PR마다 미리보기 주소를 바로 알려 드릴게요: vercel.com → Add New → Project → ${p.repoRef} Import → Deploy. 병합하면 운영 배포도 자동으로 돼요.`;
+      await env.comm.say({ user: env.user, project: p, speaker: { kind: "moderator" }, listener: { kind: "user" }, situation: "report", body: hint, machineState: { kind: "preview.hint", projectId: p.id } });
+    } catch (e) {
+      ctx.logger.warn({ err: (e as Error).message }, "preview watch failed");
+    }
+  }
+
+  /** The leader asks before starting; the next message in the topic (or "알아서 해 줘") starts the work. */
+  protected async askQuestions(env: WorkflowEnv, task: Task, speaker: Agent, questions: string[]): Promise<TaskOutcome> {
+    const { ctx, project } = env;
+    await this.setState(env, task, { state: "blocked", blockedReason: "사용자 답변 대기", checkpoint: { awaitingUser: { items: questions, askedAt: nowIso(), resumeStage: "implementation" } } });
+    await ctx.repos.settings.set("user", env.user.id, TASK_INPUT_KEY, { taskId: task.id, projectId: project.id, chatId: project.chatId, topicId: project.topicId });
+    await env.comm.say({
+      user: env.user,
+      project,
+      speaker: { kind: "agent", agent: speaker },
+      listener: { kind: "user" },
+      situation: "request_help",
+      body: `시작 전에 ${questions.length > 1 ? "몇 가지" : "하나만"} 물어볼게요.\n${questions.map((q) => `• ${q.slice(0, 160)}`).join("\n")}`,
+      buttons: [[{ text: "👌 알아서 해 줘", data: `t:skipask:${task.id}` }]],
+      machineState: { kind: "task.question", taskId: task.id, data: { questions } },
+    });
+    return { kind: "blocked", reason: "사용자 답변 대기" };
+  }
+
+  /** Ask the user for something the team cannot do; their next message in the topic continues the task. */
+  protected async askUser(env: WorkflowEnv, task: Task, speaker: Agent, items: Array<{ what: string; how?: string }>): Promise<TaskOutcome> {
+    const { ctx, project } = env;
+    const unique = [...new Map(items.map((i) => [i.what.slice(0, 80), i])).values()].slice(0, 3);
+    const how = unique.map((i) => i.how).find(Boolean) ?? howToFor(unique.map((i) => i.what).join(" "), project.repoRef);
+    await this.setState(env, task, { state: "blocked", blockedReason: "사용자 답변 대기", checkpoint: { awaitingUser: { items: unique.map((i) => i.what), askedAt: nowIso() } } });
+    await ctx.repos.settings.set("user", env.user.id, TASK_INPUT_KEY, { taskId: task.id, projectId: project.id, chatId: project.chatId, topicId: project.topicId });
+    await env.comm.say({
+      user: env.user,
+      project,
+      speaker: { kind: "agent", agent: speaker },
+      listener: { kind: "user" },
+      situation: "request_help",
+      body: `이건 제가 직접 할 수 없어서 도와주셔야 해요:\n${unique.map((i) => `• ${i.what.slice(0, 160)}`).join("\n")}${how ? `\n${how}` : ""}\n여기에 답해 주시면 이어서 할게요. 이 부분 없이 진행하려면 ⏭를 눌러 주세요.`,
+      buttons: [[{ text: "⏭ 이 부분 빼고 진행", data: `t:skipask:${task.id}` }, { text: "🛑 취소", data: `t:cancel:${task.id}` }]],
+      machineState: { kind: "task.needs_user", taskId: task.id, data: { items: unique.map((i) => i.what) } },
+    });
+    return { kind: "blocked", reason: "사용자 답변 대기" };
   }
 
   protected async block(env: WorkflowEnv, task: Task, reason: string): Promise<TaskOutcome> {
@@ -722,3 +868,56 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
 }
 
 export { approvalButtons } from "../../core/approvals/card.js";
+
+/** Words of a review's blocking issues, to notice the same objection coming back. */
+function reviewSignature(issues: Array<{ severity: string; description: string }>, summary: string): string {
+  const text = issues.filter((i) => i.severity !== "minor").map((i) => i.description).join(" ") || summary;
+  return [...new Set(text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length >= 2))].sort().join(" ");
+}
+
+function similarity(a: string, b: string): number {
+  const x = new Set(a.split(" ").filter(Boolean));
+  const y = new Set(b.split(" ").filter(Boolean));
+  if (!x.size || !y.size) return 0;
+  let common = 0;
+  for (const w of x) if (y.has(w)) common++;
+  return common / Math.min(x.size, y.size);
+}
+
+/** Work the team cannot do from code: deployment, real service URLs, accounts, devices. */
+export const EXTERNAL_WORK = /(배포|deploy|vercel|netlify|cloudflare\s*pages|production\s*url|프로덕션\s*(url|주소)|실제\s*(서비스\s*)?(url|주소)|미리보기\s*(url|주소)|도메인|domain|api\s*키|api\s*key|계정\s*(생성|설정|연결)|결제|실기기|실제\s*기기|앱\s*스토어|app\s*store)/i;
+
+/** Pending "the agent asked the user something" per user (one at a time). */
+export const TASK_INPUT_KEY = "task.input.pending";
+
+/** Short how-to for the common cases, so the user knows exactly what to do. */
+function howToFor(text: string, repoRef: string | null): string {
+  if (/(vercel|배포|deploy|production|프로덕션|미리보기)/i.test(text))
+    return `방법(Vercel): vercel.com 로그인 → Add New → Project → GitHub 저장소${repoRef ? ` ${repoRef}` : ""} Import → Deploy. 끝나면 나오는 https://…vercel.app 주소를 보내 주세요. 한 번 연결해 두면 이후 병합될 때마다 자동으로 배포돼요.`;
+  if (/(api\s*키|api\s*key)/i.test(text)) return "키 값은 채팅에 올리지 말고 서버의 .env에 넣어 주세요. 넣은 뒤 변수 이름만 알려 주시면 돼요.";
+  return "";
+}
+
+const START_LINES: Record<string, string> = {
+  careful: "'{t}' 제가 맡을게요. 꼼꼼히 볼게요.",
+  bold: "'{t}' 바로 들어갑니다!",
+  friendly: "'{t}' 제가 해 볼게요 😊",
+  analytical: "'{t}' 맡았어요. 구조부터 잡고 시작할게요.",
+  mentor: "'{t}' 제가 할게요. 끝나면 어떻게 했는지 알려 드릴게요.",
+  pragmatic: "'{t}' 할게요. 금방 끝낼게요.",
+};
+
+/** One short line when work starts, in the implementer's personality. */
+export function startLine(title: string, preset?: string | null): string {
+  const t = title.length > 30 ? `${title.slice(0, 29)}…` : title;
+  return (START_LINES[preset ?? ""] ?? "'{t}' 시작할게요.").replace("{t}", t);
+}
+
+/** One or two lines when work is done: what was done, and a question about what is left. */
+export function doneLine(card: { feature: string; prUrl: string | null; previewUrl?: string | null; openIssues: string[] }): string {
+  const what = card.feature.split("\n")[0]!.replace(/[.。]+$/, "").slice(0, 90);
+  const lines = [`다 했어요! ${what}.${card.prUrl ? ` PR 올렸어요 → ${card.prUrl}` : ""}`];
+  if (card.previewUrl) lines.push(`미리보기 → ${card.previewUrl}`);
+  if (card.openIssues.length) lines.push(`근데 ${card.openIssues[0]!.slice(0, 120)} — 이건 어떻게 할까요?`);
+  return lines.join("\n");
+}

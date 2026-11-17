@@ -67,7 +67,8 @@ export class Discussion {
       for (const [agentIndex, agent] of input.agents.entries()) {
         const peers = input.agents.filter((a) => a.id !== agent.id);
         const listener = peers.length === 1 ? { kind: "agent" as const, agent: peers[0]! } : { kind: "team" as const };
-        const transcript = turns.map((t) => `${this.name(input.agents, t.agentId)}(라운드${t.round}): ${t.position}`).join("\n");
+        // The chat so far, as people saw it — so each line can react to the previous ones.
+        const transcript = turns.map((t) => `${this.name(input.agents, t.agentId)}: ${t.message.replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
         const prompt = [
           `당신은 AI 개발 조직의 구성원 '${agent.name}' 입니다. 아래 안건에 대해 짧고 실질적인 의견을 내세요.`,
           `안건: ${input.topic}`,
@@ -75,7 +76,8 @@ export class Discussion {
           transcript ? `\n지금까지의 의견:\n${transcript}` : "",
           `\n${protocol.instruction(round, agentIndex)}`,
           `\n${await this.comm.styleFor(input.user, agent, listener, "discussion")}`,
-          `\n반드시 다음 JSON만 출력: {"position": "핵심 입장(기술적 사실, ${protocol.positionLength})", "agree": true|false, "message": "동료에게 하는 캐릭터 대사(위 말투 규칙 적용, 1~3문장)"}`,
+          "\n## 단톡방처럼\nmessage는 메신저 단톡방에 쓰듯 한 줄(길어야 2문장)로 쓰세요. 인사·호칭·맺음말 없이 바로 본론. 앞 사람 말에 바로 반응해도 됩니다(예: \"ㅇㅇ 그거 좋다\", \"난 반대, 그러면 느려짐\"). 이미 나온 말은 반복하지 마세요.",
+          `\n반드시 다음 JSON만 출력: {"position": "핵심 입장(기술적 사실, ${protocol.positionLength})", "agree": true|false, "message": "단톡방에 쓰는 한 줄(위 말투 규칙 적용)"}`,
         ].join("\n");
         const out = await this.runner.run({ agent, task: input.task, project: input.project, purpose: "discuss", prompt, cwd: input.cwd, mode: "readonly", kinds: ["local_cli", "paid_api"], timeoutMs: 5 * 60_000 });
         if (out.status !== "succeeded") {
@@ -132,7 +134,7 @@ export class Discussion {
       speaker: { kind: "moderator" },
       listener: { kind: "user" },
       situation: "report",
-      body: consensus ? `${rounds}라운드 만에 의견이 모였어요.\n${summary}` : `${rounds}라운드 동안 완전한 합의는 없었어요. 쟁점을 정리했어요.\n${summary}\n추가 토론이 필요하면 "토론 연장"이라고 말씀해 주세요.`,
+      body: consensus ? `정리하면: ${shortSummary(finals, input.agents, 1)}` : `아직 의견이 갈려요.\n${shortSummary(finals, input.agents, 3)}\n더 이야기하려면 "토론 연장"이라고 해 주세요.`,
       // Experiment metrics for comparing variant A vs B per worldview (PRD §2.1).
       machineState: { kind: "discussion.end", taskId: input.task.id, data: { rounds, consensus, variant: protocol.variant, mode, baseMode: modeDef(mode).baseMode, durationMs: Date.now() - startedAt, turns: turns.length } },
     });
@@ -142,4 +144,13 @@ export class Discussion {
   private name(agents: Agent[], id: string): string {
     return agents.find((a) => a.id === id)?.name ?? id;
   }
+}
+
+/** The moderator's wrap-up: one line on consensus, otherwise one short line per person. */
+function shortSummary(finals: Map<string, DiscussionTurn>, agents: Array<{ id: string; name: string }>, max: number): string {
+  const items = [...finals.values()].slice(0, max).map((t) => {
+    const p = t.position.replace(/\s+/g, " ").slice(0, 100);
+    return max === 1 ? p : `• ${agents.find((a) => a.id === t.agentId)?.name ?? "?"}: ${p}`;
+  });
+  return items.join("\n");
 }
