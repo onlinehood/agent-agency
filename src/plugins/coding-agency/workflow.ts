@@ -167,6 +167,16 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         body: `'${task.title}' 작업을 배정할게요.\n${asg.reasons.join("\n")}`,
         machineState: { kind: "task.assigned", taskId: task.id, data: { implementer: asg.implementer.id, reviewer: asg.reviewer?.id ?? null } },
       });
+      // The one line people see at the start: the implementer, in character.
+      await env.comm.say({
+        user: env.user,
+        project,
+        speaker: { kind: "agent", agent: asg.implementer },
+        listener: { kind: "user" },
+        situation: "report",
+        body: startLine(task.title, (await ctx.repos.personas.find(asg.implementer.personaId))?.preset),
+        machineState: { kind: "task.started", taskId: task.id },
+      });
     }
     const implementer = await this.agentOrNull(env, task.assignedAgentId);
     if (!implementer) return this.block(env, task, "담당 에이전트를 찾을 수 없습니다.");
@@ -259,7 +269,10 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       const withinScope = !plan.scope_expansion && !plan.architecture_change;
       if (plan.architecture_change) return this.requestApproval(env, task, "architecture_change", `주요 아키텍처 변경이 포함된 계획입니다.\n${plan.summary ?? ""}\n위험: ${asStringArray(plan.risks).join(", ") || "없음"}`, {}, out.agent);
       if (plan.scope_expansion) return this.requestApproval(env, task, "scope_expansion", `요청 범위를 넘어서는 기능 추가가 포함됩니다.\n${plan.summary ?? ""}`, {}, out.agent);
-      if (questions.length || ctx.approvals.needsApproval("plan_scope", mode, { withinApprovedScope: withinScope })) {
+      // Real questions are asked in chat, not as an approval card: the answer (or "알아서") starts the work.
+      // In 자동 진행 the user asked not to be interrupted: go with the recommended defaults.
+      if (questions.length && !(await ctx.repos.projects.get(project.id)).settings.autopilot) return this.askQuestions(env, task, out.agent, questions);
+      if (ctx.approvals.needsApproval("plan_scope", mode, { withinApprovedScope: withinScope })) {
         return this.requestApproval(env, task, "plan_scope", `${plan.summary ?? task.title}\n수락 기준:\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}${questions.length ? `\n\n확인이 필요한 질문:\n${questions.map((q) => `- ${q}`).join("\n")}` : ""}`, {}, out.agent);
       }
     }
@@ -557,6 +570,18 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       preformatted: true,
       machineState: { kind: "report.card", taskId: task.id, data: { prUrl, previewUrl } },
     });
+    await ctx.repos.tasks.checkpoint(task.id, { reportCard: card });
+    // What people see at the end: the implementer says what was done and asks about what is left.
+    await env.comm.say({
+      user: env.user,
+      project,
+      speaker: { kind: "agent", agent: implementer },
+      listener: { kind: "user" },
+      situation: "report",
+      body: doneLine(card),
+      buttons: [[{ text: "📋 자세히", data: `t:report:${task.id}` }]],
+      machineState: { kind: "task.finished", taskId: task.id, data: { prUrl } },
+    });
     env.ctx.events.emit("report.ready", { projectId: project.id, taskId: task.id, card });
     await this.afterReport(env, task, ws).catch((e) => ctx.logger.warn({ err: (e as Error).message }, "afterReport failed"));
     await ctx.memory.remember(project.id, "task", `완료 보고: ${task.title} → ${prUrl ?? ws.branch}`, { sourceRefs: [task.id] });
@@ -641,6 +666,24 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       body: `'${task.title}' 작업을 마무리했어요. ${note}`,
       machineState: { kind: "task.done", taskId: task.id, status: "done" },
     });
+  }
+
+  /** The leader asks before starting; the next message in the topic (or "알아서 해 줘") starts the work. */
+  protected async askQuestions(env: WorkflowEnv, task: Task, speaker: Agent, questions: string[]): Promise<TaskOutcome> {
+    const { ctx, project } = env;
+    await this.setState(env, task, { state: "blocked", blockedReason: "사용자 답변 대기", checkpoint: { awaitingUser: { items: questions, askedAt: nowIso(), resumeStage: "implementation" } } });
+    await ctx.repos.settings.set("user", env.user.id, TASK_INPUT_KEY, { taskId: task.id, projectId: project.id, chatId: project.chatId, topicId: project.topicId });
+    await env.comm.say({
+      user: env.user,
+      project,
+      speaker: { kind: "agent", agent: speaker },
+      listener: { kind: "user" },
+      situation: "request_help",
+      body: `시작 전에 ${questions.length > 1 ? "몇 가지" : "하나만"} 물어볼게요.\n${questions.map((q) => `• ${q.slice(0, 160)}`).join("\n")}`,
+      buttons: [[{ text: "👌 알아서 해 줘", data: `t:skipask:${task.id}` }]],
+      machineState: { kind: "task.question", taskId: task.id, data: { questions } },
+    });
+    return { kind: "blocked", reason: "사용자 답변 대기" };
   }
 
   /** Ask the user for something the team cannot do; their next message in the topic continues the task. */
@@ -811,4 +854,27 @@ function howToFor(text: string, repoRef: string | null): string {
     return `방법(Vercel): vercel.com 로그인 → Add New → Project → GitHub 저장소${repoRef ? ` ${repoRef}` : ""} Import → Deploy. 끝나면 나오는 https://…vercel.app 주소를 보내 주세요. 한 번 연결해 두면 이후 병합될 때마다 자동으로 배포돼요.`;
   if (/(api\s*키|api\s*key)/i.test(text)) return "키 값은 채팅에 올리지 말고 서버의 .env에 넣어 주세요. 넣은 뒤 변수 이름만 알려 주시면 돼요.";
   return "";
+}
+
+const START_LINES: Record<string, string> = {
+  careful: "'{t}' 제가 맡을게요. 꼼꼼히 볼게요.",
+  bold: "'{t}' 바로 들어갑니다!",
+  friendly: "'{t}' 제가 해 볼게요 😊",
+  analytical: "'{t}' 맡았어요. 구조부터 잡고 시작할게요.",
+  mentor: "'{t}' 제가 할게요. 끝나면 어떻게 했는지 알려 드릴게요.",
+  pragmatic: "'{t}' 할게요. 금방 끝낼게요.",
+};
+
+/** One short line when work starts, in the implementer's personality. */
+export function startLine(title: string, preset?: string | null): string {
+  const t = title.length > 30 ? `${title.slice(0, 29)}…` : title;
+  return (START_LINES[preset ?? ""] ?? "'{t}' 시작할게요.").replace("{t}", t);
+}
+
+/** One or two lines when work is done: what was done, and a question about what is left. */
+export function doneLine(card: { feature: string; prUrl: string | null; openIssues: string[] }): string {
+  const what = card.feature.split("\n")[0]!.replace(/[.。]+$/, "").slice(0, 90);
+  const lines = [`다 했어요! ${what}.${card.prUrl ? ` PR 올렸어요 → ${card.prUrl}` : ""}`];
+  if (card.openIssues.length) lines.push(`근데 ${card.openIssues[0]!.slice(0, 120)} — 이건 어떻게 할까요?`);
+  return lines.join("\n");
 }

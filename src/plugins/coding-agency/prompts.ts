@@ -22,7 +22,7 @@ export function planPrompt(input: { task: Task; context: string; style: string }
     "\n## 수용 기준 쓰는 법\n- 코드와 자동 검사(테스트·lint·타입 검사)로 확인할 수 있는 동작만 적으세요.\n- 배포, 실제 URL, 외부 계정, 실기기 확인처럼 이 팀이 할 수 없는 일은 기준에 넣지 마세요. 필요하면 '사용자가 할 일'로 summary에만 적으세요.\n- 특정 사람이나 다른 에이전트가 따로 실행·검증·서명해야 하는 기준, 검증 기록·보고서 작성 같은 절차 기준은 넣지 마세요(사용자가 요청한 경우만 예외).\n- 요청 크기에 맞게 적으세요. 작은 요청은 3~6개면 충분합니다. 요청에 없는 기능을 기준으로 추가하지 마세요.",
     `\n## 규칙\n${SAFETY_RULES.map((r) => `- ${r}`).join("\n")}`,
     `\n## 말투(message 필드에만 적용)\n${input.style}`,
-    '\n다음 JSON만 출력하세요:\n{"summary": "작업 요약", "acceptance_criteria": ["검증 가능한 기준", "..."], "difficulty": "trivial|easy|medium|hard|epic", "architecture_change": false, "scope_expansion": false, "core_feature": false, "risks": ["..."], "questions": ["정말 중요한 모호성만"], "subtasks": [{"title": "독립적으로 구현·검증 가능한 하위 작업", "description": "...", "acceptance_criteria": ["..."]}], "message": "사용자에게 하는 짧은 계획 보고(캐릭터 대사)"}\n요청이 크면 subtasks를 2~5개로 나누고, 하나의 PR로 충분하면 빈 배열로 두세요.',
+    '\n다음 JSON만 출력하세요:\n{"summary": "작업 요약", "acceptance_criteria": ["검증 가능한 기준", "..."], "difficulty": "trivial|easy|medium|hard|epic", "architecture_change": false, "scope_expansion": false, "core_feature": false, "risks": ["..."], "questions": ["정말 중요한 모호성만, 짧게, 추천안 포함 (예: 0으로 나누면 뭐라고 표시할까요? 추천: Error)"], "subtasks": [{"title": "독립적으로 구현·검증 가능한 하위 작업", "description": "...", "acceptance_criteria": ["..."]}], "message": "사용자에게 하는 짧은 계획 보고(캐릭터 대사)"}\n요청이 크면 subtasks를 2~5개로 나누고, 하나의 PR로 충분하면 빈 배열로 두세요.',
   ].join("\n");
 }
 

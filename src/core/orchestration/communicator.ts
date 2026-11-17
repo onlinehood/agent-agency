@@ -1,7 +1,7 @@
 import type { AppContext } from "../context.js";
 import type { Agent, MachineState, OrganizationMode, OrgRole, Project } from "../types.js";
 import type { User } from "../../db/repositories.js";
-import { agentOrgRole, listenerLabel, promptFor, render, speakerLabel, type Listener, type Speaker } from "../organization/renderer.js";
+import { agentOrgRole, promptFor, render, type Listener, type Speaker } from "../organization/renderer.js";
 import type { Situation } from "../organization/dialogue.js";
 import { modeDef } from "../organization/modes.js";
 import type { Button, SentRef } from "./ports.js";
@@ -40,6 +40,11 @@ export class Communicator {
 
   setStylist(s: DialogueStylist): void {
     this.stylist = s;
+  }
+
+  /** "chat" (default): only conversation-worthy messages; "log": every step, as before. */
+  async chatStyle(user: User): Promise<"chat" | "log"> {
+    return (await this.ctx.repos.settings.get<string>("user", user.id, CHAT_STYLE_KEY)) === "log" ? "log" : "chat";
   }
 
   async mode(user: User): Promise<OrganizationMode> {
@@ -105,7 +110,7 @@ export class Communicator {
     let header: string;
     if (input.inCharacter || input.speaker.kind === "system") {
       text = input.body;
-      header = input.speaker.kind === "system" ? "⚙️ AgentAgency" : `${modeDef(mode).emoji} ${speakerLabel(mode, sp)} → ${listenerLabel(mode, li)}`;
+      header = input.speaker.kind === "system" ? "⚙️ AgentAgency" : chatHeader(modeDef(mode).emoji, sp, li);
     } else {
       const renderInput = {
         mode,
@@ -120,17 +125,21 @@ export class Communicator {
       };
       const r = render(renderInput);
       text = r.text;
-      header = `${modeDef(mode).emoji} ${r.speakerLabel} → ${r.listenerLabel}`;
+      header = chatHeader(modeDef(mode).emoji, sp, li);
       const polished = await this.tryPolish(input, renderInput);
       if (polished) text = polished;
     }
     text = maskKnown(text, [...secrets, this.ctx.config.TELEGRAM_BOT_TOKEN, this.ctx.config.GITHUB_TOKEN]);
     const msg = { header, text, buttons: input.buttons, preformatted: input.preformatted };
     let ref: SentRef | null = null;
+    // Chat style: step-by-step work logs stay out of the chat (kept in history, the pinned progress
+    // message and /status). People only see starts, results, questions and conversation.
+    const quiet = QUIET_IN_CHAT.has(input.machineState.kind) && (await this.chatStyle(input.user)) === "chat";
     try {
+      if (quiet) throw QUIET;
       ref = input.project && input.project.topicId != null ? await this.ctx.out.postProject(input.project, msg) : await this.ctx.out.postLounge(input.user.telegramUserId, msg);
     } catch (e) {
-      this.ctx.logger.warn({ err: (e as Error).message }, "failed to deliver message");
+      if (e !== QUIET) this.ctx.logger.warn({ err: (e as Error).message }, "failed to deliver message");
     }
     const stored = await this.ctx.repos.conversations.add({
       projectId: input.project?.id ?? null,
@@ -159,4 +168,15 @@ export class Communicator {
   async orgRoleOf(user: User, agent: Agent): Promise<OrgRole> {
     return (await this.speaker(user, { kind: "agent", agent })).orgRole;
   }
+}
+
+export const CHAT_STYLE_KEY = "chat.style";
+
+/** Work-log steps that are not posted in chat style (they stay in history and the pinned message). */
+export const QUIET_IN_CHAT = new Set(["task.assigned", "task.planned", "task.implemented", "quality.gate", "review.verdict", "approval.auto", "report.card", "discussion.start"]);
+const QUIET = new Error("quiet");
+
+/** Messenger-style header: the speaker's name; "A → B" only when one agent talks to another. */
+function chatHeader(emoji: string, sp: { name: string }, li: { name: string; agentId: string | null }): string {
+  return li.agentId ? `${emoji} ${sp.name} → ${li.name}` : `${emoji} ${sp.name}`;
 }

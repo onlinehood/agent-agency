@@ -18,6 +18,32 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("the leader asks a real question in chat before starting; the answer goes into the work", async () => {
+    const base = codingHandler();
+    const asks = (req: { prompt: string; cwd: string }) =>
+      req.prompt.includes("프로젝트 리더입니다")
+        ? JSON.stringify({ summary: "hello 함수 추가", acceptance_criteria: ["hello()가 인사말을 반환"], difficulty: "easy", architecture_change: false, scope_expansion: false, core_feature: false, risks: [], questions: ["인사말은 뭐로 할까요? 추천: hello"], message: "질문 하나만요." })
+        : base(req as never);
+    app = await makeTestApp({ claude: asks as never, codex: asks as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    const say = (text: string) => app!.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text });
+    await say("hello 함수를 추가해줘");
+    await app.scheduler.drain(60_000);
+    let [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("blocked");
+    expect(app.out.allText()).toContain("시작 전에 하나만 물어보겠습니다.\n• 인사말은 뭐로 할까요? 추천: hello"); // corporate → formal ending
+    expect((await app.ctx.repos.approvals.listPending(user.id)).some((a) => a.action === "plan_scope")).toBe(false); // no approval card
+    await say("hello로 해");
+    await app.scheduler.drain(60_000);
+    task = await app.ctx.repos.tasks.get(task!.id);
+    expect(task.description).toContain("[사용자 답변] 인사말은 뭐로 할까요? 추천: hello → hello로 해");
+    expect(task.prRef).toContain("/pull/1");
+  }, 180_000);
+
   it("an empty attempt on code that already does the job finishes the task after review, without a PR", async () => {
     const h = codingHandler();
     const already = (req: { prompt: string; cwd: string }) => (req.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다") ? JSON.stringify({ summary: "이미 구현되어 있음", changes: [], tests_added: [], open_issues: [], message: "이미 돼 있어요." }) : h(req as never));
@@ -172,7 +198,9 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     const second = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal && t.id !== task.id)[0]!;
     expect(second.state).toBe("done");
     expect(app.out.project.filter((m) => m.msg.buttons?.flat().some((b) => b.data.startsWith("a:ok:"))).length).toBe(cardsBefore);
-    expect(app.out.allText()).toContain("🤖 자동 진행 — PR 병합");
+    // Auto-approvals are work-log steps: kept in history, not posted in chat style.
+    expect(app.out.allText()).not.toContain("🤖 자동 진행 — PR 병합");
+    expect((await app.ctx.repos.conversations.list(project.id, 500)).some((m) => m.kind === "approval.auto" && m.renderedText.includes("PR 병합"))).toBe(true);
     expect(await app.ctx.repos.approvals.listPending(user.id)).toHaveLength(0);
   }, 180_000);
 
@@ -233,7 +261,15 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     expect(done.state).toBe("done");
     expect(app.github.calls.filter((c) => c.startsWith("mergePullRequest"))).toHaveLength(1);
 
-    // Report card + pinned progress were produced; machine state stored separately from text.
+    // Chat style: people see a start line and a done line from the implementer, not every step.
+    const chat = app.out.allText();
+    expect(chat).toMatch(/(제가 맡을게요|바로 들어갑니다|제가 해 볼게요)/);
+    expect(chat).toContain("다 했어요!");
+    expect(chat).not.toContain("품질 게이트 통과");
+    expect(chat).not.toContain("결과 보고");
+    // The full report is one tap away.
+    expect(app.out.project.some((m) => m.msg.buttons?.flat().some((b) => b.data === `t:report:${task!.id}`))).toBe(true);
+    await app.orchestrator.handleCallback({ telegramUserId: ADMIN_TG, data: `t:report:${task!.id}`, chatId: project.chatId!, messageId: 2 });
     expect(app.out.allText()).toContain("결과 보고");
     expect(app.out.pinned.get(project.id)).toContain("Demo");
     const convo = await app.ctx.repos.conversations.list(project.id, 200);

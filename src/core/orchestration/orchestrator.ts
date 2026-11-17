@@ -3,7 +3,7 @@ import type { Agent, Approval, OrganizationMode, PersonaPreset, Project, Task } 
 import type { User } from "../../db/repositories.js";
 import type { WorkTypePlugin, WorkflowEnv, TaskOutcome } from "../../plugins/types.js";
 import { AgentRunner } from "../agents/runner.js";
-import { Communicator } from "./communicator.js";
+import { CHAT_STYLE_KEY, Communicator } from "./communicator.js";
 import { Discussion } from "./discussion.js";
 import { DialogueStylist } from "../organization/stylist.js";
 import { runQualityGate } from "../../quality/gate.js";
@@ -12,7 +12,7 @@ import { runBackup } from "../../backup/service.js";
 import { APP_VERSION } from "../../version.js";
 import path from "node:path";
 import { classify, detectWorkType, slugify, type Classified } from "./classifier.js";
-import { isInternal, progressText, projectStatusKo, statusSummary } from "./progress.js";
+import { isInternal, progressText, projectStatusKo, reportCardText, statusSummary } from "./progress.js";
 import { allModes, modeDef, isOrganizationMode, resolveModeArg } from "../organization/modes.js";
 import { assertProjectTransition } from "../projects/lifecycle.js";
 import { budgetFor, estimateDifficulty, classifyWork, WORK_CLASS_ORDER } from "../usage/budget.js";
@@ -413,7 +413,7 @@ export class Orchestrator {
       speaker: { kind: "moderator" },
       listener: { kind: "user" },
       situation: "instruction",
-      body: `'${title}' 작업으로 접수했어요.${names.length ? ` ${names.join(", ")}을(를) 우선 배정할게요.` : ""} 난이도 예상: ${difficulty}.`,
+      body: `'${title}' 접수했어요.${names.length ? ` ${names.join(", ")}이(가) 맡아요.` : ""}`,
       buttons: [[{ text: "⬆️ 우선순위 올리기", data: `t:prio:${task.id}` }, { text: "🛑 취소", data: `t:cancel:${task.id}` }], ...((await this.ctx.repos.projects.get(project.id)).settings.autopilot ? [] : [[{ text: "🤖 끝까지 자동 진행", data: `p:auto:${project.id}:on` }]])],
       machineState: { kind: "task.created", taskId: task.id, projectId: project.id },
     });
@@ -803,12 +803,27 @@ export class Orchestrator {
       if (parts[0] === "t") {
         const [, op, taskId] = parts;
         if (op === "cancel") return { toast: await this.cancelTask(user, taskId!) };
+        if (op === "report") {
+          const t = await this.ctx.repos.tasks.get(taskId!);
+          const card = t.checkpoint.reportCard as Parameters<typeof reportCardText>[0] | undefined;
+          if (!card) return { toast: "보고서가 아직 없어요." };
+          const p = await this.ctx.repos.projects.get(t.projectId);
+          await this.comm.say({ user, project: p, speaker: { kind: "system" }, listener: { kind: "user" }, situation: "report", body: reportCardText(card), preformatted: true, machineState: { kind: "report.card.shown", taskId: t.id } });
+          return { toast: "보고서를 보냈어요." };
+        }
         if (op === "skipask") {
           // Go on without what was asked: open the PR and record the item there.
           const t = await this.ctx.repos.tasks.get(taskId!);
           const p = await this.ctx.repos.projects.get(t.projectId);
-          const items = ((t.checkpoint.awaitingUser as { items?: string[] } | undefined)?.items ?? []).map((i) => `${i} (사용자 확인 필요)`);
+          const awaiting = (t.checkpoint.awaitingUser as { items?: string[]; resumeStage?: string } | undefined) ?? {};
           await this.ctx.repos.settings.delete("user", user.id, TASK_INPUT_KEY);
+          if (awaiting.resumeStage === "implementation") {
+            // "알아서 해 줘" to the leader's questions: start with the recommended defaults.
+            const nt = await this.ctx.repos.tasks.update(t.id, { state: "queued", stage: "implementation", blockedReason: null, description: `${t.description}\n\n[사용자] 질문(${(awaiting.items ?? []).join(" / ")})은 알아서 정해 달라고 함 — 합리적인 기본값으로 진행`, checkpoint: { awaitingUser: null } });
+            await this.scheduler?.enqueueTask(nt, p);
+            return { toast: "추천대로 진행할게요." };
+          }
+          const items = (awaiting.items ?? []).map((i) => `${i} (사용자 확인 필요)`);
           const nt = await this.ctx.repos.tasks.update(t.id, { state: "queued", stage: "pr", blockedReason: null, checkpoint: { awaitingUser: null, unresolvedReview: items } });
           await this.scheduler?.enqueueTask(nt, p);
           return { toast: "그 부분은 빼고 진행할게요." };
@@ -870,16 +885,15 @@ export class Orchestrator {
     await this.ctx.repos.settings.delete("user", user.id, TASK_INPUT_KEY);
     if (!task || task.state !== "blocked" || !task.checkpoint.awaitingUser) return false;
     const project = await this.ctx.repos.projects.get(task.projectId);
-    const asked = ((task.checkpoint.awaitingUser as { items?: string[] }).items ?? []).join(" / ");
-    const nt = await this.ctx.repos.tasks.update(task.id, {
-      state: "queued",
-      stage: "fix",
-      blockedReason: null,
-      checkpoint: { awaitingUser: null, lastFeedback: `사용자 답변: ${text}\n(요청했던 것: ${asked}) 답변 내용을 반영하세요.` },
-    });
+    const awaiting = task.checkpoint.awaitingUser as { items?: string[]; resumeStage?: string };
+    const asked = (awaiting.items ?? []).join(" / ");
+    const nt =
+      awaiting.resumeStage === "implementation"
+        ? await this.ctx.repos.tasks.update(task.id, { state: "queued", stage: "implementation", blockedReason: null, description: `${task.description}\n\n[사용자 답변] ${asked} → ${text}`, checkpoint: { awaitingUser: null } })
+        : await this.ctx.repos.tasks.update(task.id, { state: "queued", stage: "fix", blockedReason: null, checkpoint: { awaitingUser: null, lastFeedback: `사용자 답변: ${text}\n(요청했던 것: ${asked}) 답변 내용을 반영하세요.` } });
     await this.ctx.memory.remember(project.id, "decision", `사용자 제공 (${asked}): ${text}`, { certainty: "confirmed", sourceRefs: [task.id] });
     await this.scheduler?.enqueueTask(nt, project);
-    await this.moderatorSays(user, project, "고마워요, 이어서 할게요.", "task.user_input");
+    await this.moderatorSays(user, project, awaiting.resumeStage === "implementation" ? "알겠어요, 그렇게 시작할게요." : "고마워요, 이어서 할게요.", "task.user_input");
     return true;
   }
 
@@ -1201,6 +1215,14 @@ export class Orchestrator {
         await this.proposeImport(user, `${m[1]}/${m[2]}`, []);
         return;
       }
+      case "/chat": {
+        // chat: only starts, results, questions and conversation; log: every step as before.
+        if (arg === "log" || arg === "chat") {
+          await this.ctx.repos.settings.set("user", user.id, CHAT_STYLE_KEY, arg);
+          return say(arg === "log" ? "이제 작업 단계마다 기록을 올릴게요. 대화만 보려면 /chat chat" : "이제 대화처럼 시작·결과·질문만 올릴게요. 단계별 기록은 고정 메시지와 /status에 있어요.");
+        }
+        return say(`지금: ${(await this.comm.chatStyle(user)) === "log" ? "단계별 기록(log)" : "대화(chat)"}\n/chat chat — 시작·결과·질문만 · /chat log — 단계마다 기록`);
+      }
       case "/auto":
         return this.autopilotCommand(user, project, arg === "off" ? "off" : arg === "on" || !arg ? (arg ? "on" : "status") : "status");
       case "/approvals":
@@ -1454,6 +1476,7 @@ export class Orchestrator {
 }
 
 export const HELP_TEXT = [
+  "/chat [chat|log] — 대화처럼 짧게(기본) 또는 단계마다 기록",
   "/auto [on|off] — 자동 진행 (위험한 작업만 승인 요청). \"자동으로 진행해\"라고 말해도 됩니다",
   "🤖 AgentAgency — Your Agents. Your Agency.",
   "",

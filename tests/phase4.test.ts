@@ -107,7 +107,7 @@ describe("user-defined worldviews", () => {
     const last = app.out.lounge.at(-1)!.msg;
     expect(last.header).toContain("🚀");
     expect(last.header).toContain("PM");
-    expect(last.text.startsWith("대표님,")).toBe(true);
+    expect(last.text.startsWith("대표님,")).toBe(false); // messenger style: no address prefix
     // Overrides: member→user polite (campus base would be formal); peers informal after warming up.
     expect(resolveFormality({ mode: "custom:startup", speakerRole: "member", listenerRole: "user", situation: "report" })).toBe("polite");
     expect(resolveFormality({ mode: "custom:startup", speakerRole: "member", listenerRole: "member", situation: "discussion", affinity: 0.1 })).toBe("polite");

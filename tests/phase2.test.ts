@@ -198,7 +198,7 @@ describe("Phase 2 natural moderator speech (fact-preserving LLM polish)", () => 
     await app.ctx.repos.users.updateProfile(user.id, { moderatorAgentId: claude.id, mode: "campus" });
     const say = (body: string) => app!.orchestrator.comm.say({ user, speaker: { kind: "moderator" }, listener: { kind: "user" }, situation: "report", body, machineState: { kind: "t" } });
     await say("준비됐어요. 2개 프로젝트가 대기 중이에요.");
-    expect(app.out.lounge.at(-1)!.msg.text).toContain("교수님, 준비됐어요"); // flag off → template, no call
+    expect(app.out.lounge.at(-1)!.msg.text).toBe("준비됐어요. 2개 프로젝트가 대기 중입니다."); // flag off → template (formal ending), no call
     expect(calls).toBe(0);
     await app.ctx.flags.set("dialogue.llm_renderer", true);
     await say("준비됐어요. 2개 프로젝트가 대기 중이에요.");

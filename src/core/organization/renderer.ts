@@ -154,9 +154,9 @@ export function listenerLabel(mode: OrganizationMode, listener: Listener): strin
 export function render(input: RenderInput): RenderedMessage {
   const ctx = toDialogueContext(input);
   const style = resolveStyle(ctx);
-  const addr = input.ambiguousAudience ? modeDef(input.mode).teamAddress : style.addressTerm.replace("{name}", input.listener.name);
+  // Like a messenger: no "CEO님," in front of every line. The header already says who speaks.
   const bodyLines = input.body.split("\n").map((l) => applyEnding(l, style.ending));
-  const text = `${addr}, ${bodyLines.join("\n")}`;
+  const text = bodyLines.join("\n");
   return {
     text,
     speakerLabel: speakerLabel(input.mode, input.speaker),
