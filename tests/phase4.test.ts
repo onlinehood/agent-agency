@@ -40,6 +40,8 @@ describe("additional executors: Gemini CLI and Cursor CLI", () => {
     const c = new CursorCliAdapter("cursor-agent");
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).toEqual(expect.arrayContaining(["--mode", "plan", "--output-format", "json"]));
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).not.toContain("--force");
+    // Write runs may run commands (headless runs cannot answer approval prompts).
+    expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "write" })).toContain("--force");
     // Codex cannot start its own sandbox inside a container: writes then run in the task workspace
     // with full access (the container is the boundary); read-only runs stay read-only.
     expect(CodexCliAdapter.sandboxProbeFailed({ code: 1, stdout: "", stderr: "bwrap: No permissions to create a new namespace" })).toBe(true);
