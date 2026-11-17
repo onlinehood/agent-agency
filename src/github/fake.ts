@@ -4,6 +4,8 @@ import type { CheckSummary, GitHubService, PullRequestInfo, RepoAnalysis, RepoIn
 export class FakeGitHubService implements GitHubService {
   repos = new Map<string, RepoInfo>();
   prs = new Map<string, PullRequestInfo[]>();
+  /** Bodies of created PRs, in order (for tests). */
+  prBodies: string[] = [];
   comments: Array<{ repo: string; number: number; body: string }> = [];
   calls: string[] = [];
   login = "tester";
@@ -50,6 +52,7 @@ export class FakeGitHubService implements GitHubService {
 
   async createPullRequest(fullName: string, input: { head: string; base: string; title: string; body: string }): Promise<PullRequestInfo> {
     this.calls.push(`createPullRequest:${input.head}`);
+    this.prBodies.push(input.body);
     const existing = await this.findOpenPr(fullName, input.head);
     if (existing) return existing;
     const list = this.prs.get(fullName) ?? [];

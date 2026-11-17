@@ -319,6 +319,13 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         if (!sha && !(await ctx.workspaces.git.changedFiles(ws.dir, ws.base)).length) {
           await ctx.memory.remember(project.id, "lesson", `'${task.title}' 시도 ${task.attempts}: 코드 변경 없이 종료됨`, { sourceRefs: [task.id, out.executionId] });
           const streak = Number(task.checkpoint.noChangeStreak ?? 0) + 1;
+          // First empty attempt: maybe nothing needs changing (the code already does it). Let the
+          // reviewer judge the existing code; approval finishes the task, a rejection gives the
+          // next attempt concrete feedback instead of "you changed nothing".
+          if (streak === 1) {
+            task = await this.setState(env, task, { stage: "review", state: "review", checkpoint: { noChangeStreak: streak, noDiff: true } });
+            continue;
+          }
           // The same agent keeps ending without touching a file (e.g. its executor cannot write in
           // this environment): hand the work to another agent instead of looping until the budget.
           const alt = streak >= 2 ? await ctx.team.alternativeFor(project, out.agent) : null;
@@ -347,7 +354,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         }
         task = await this.setState(env, task, {
           stage: "testing",
-          checkpoint: { noChangeStreak: 0, commitSha: sha ?? task.checkpoint.commitSha, impl: { summary: impl.summary ?? "", changes: asStringArray(impl.changes), testsAdded: asStringArray(impl.tests_added), openIssues: asStringArray(impl.open_issues) } },
+          checkpoint: { noChangeStreak: 0, noDiff: false, commitSha: sha ?? task.checkpoint.commitSha, impl: { summary: impl.summary ?? "", changes: asStringArray(impl.changes), testsAdded: asStringArray(impl.tests_added), openIssues: asStringArray(impl.open_issues) } },
         });
         await env.comm.say({
           user: env.user,
@@ -409,7 +416,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
           agent: reviewer,
           task,
           purpose: "review",
-          prompt: this.reviewPromptFor(task, diff, gateText, style, implementer.name),
+          prompt: this.reviewPromptFor(task, diff, gateText, style, implementer.name) + (task.checkpoint.noDiff ? "\n\n## 참고\n이번 시도에서 구현 담당이 바꾼 코드가 없습니다(diff 없음). 현재 저장소의 코드가 이미 작업과 수용 기준을 충족하는지 직접 확인해 판단하세요. 충족하면 approved=true로 승인하고, 부족하면 무엇을 고쳐야 하는지 구체적으로 적으세요." : ""),
           cwd: ws.dir,
           mode: "readonly",
           sandbox: ws.sandbox,
@@ -442,11 +449,34 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
           machineState: { kind: "review.verdict", taskId: task.id, executionId: out.executionId, status: approved ? "approved" : "changes_requested", data: { issues: issues.length } },
         });
         if (!approved) {
+          // The same objection again after a fix round means the fix loop cannot resolve it (often a
+          // criterion code cannot meet, e.g. a real deployment URL). Stop looping: open the PR with
+          // the objection recorded, and let the user decide at the merge step.
+          const sig = reviewSignature(issues, verdict.summary);
+          const prevSig = String(task.checkpoint.lastRejectSignature ?? "");
+          if (prevSig && similarity(sig, prevSig) >= 0.5) {
+            const unresolved = issues.filter((i) => i.severity !== "minor").map((i) => `${i.description}${i.file ? ` (${i.file})` : ""}`);
+            await env.comm.say({
+              user: env.user,
+              project,
+              speaker: { kind: "moderator" },
+              listener: { kind: "user" },
+              situation: "report",
+              body: `리뷰어가 같은 지적을 반복해서 수정을 멈췄어요. PR을 열고 남은 지적은 PR에 적어 둘게요: ${unresolved[0] ?? verdict.summary}`.slice(0, 600),
+              machineState: { kind: "review.repeated", taskId: task.id },
+            });
+            await this.setState(env, task, { stage: "pr", checkpoint: { reviewVerdict: verdict, unresolvedReview: unresolved, lastRejectSignature: null } });
+            return null;
+          }
           const fb = `교차 리뷰에서 수정 요청이 있었습니다: ${verdict.summary}\n${issues.map((i) => `- [${i.severity}] ${i.description}${i.file ? ` (${i.file})` : ""}`).join("\n")}`;
-          task = await this.setState(env, task, { stage: "fix", checkpoint: { reviewVerdict: verdict, lastFeedback: fb } });
+          task = await this.setState(env, task, { stage: "fix", checkpoint: { reviewVerdict: verdict, lastFeedback: fb, lastRejectSignature: sig } });
           continue;
         }
-        await this.setState(env, task, { stage: "pr", checkpoint: { reviewVerdict: verdict } });
+        if (task.checkpoint.noDiff && !(await ctx.workspaces.git.changedFiles(ws.dir, ws.base)).length) {
+          await this.complete(env, await this.setState(env, task, { checkpoint: { reviewVerdict: verdict, noDiff: false } }), "기존 코드가 이미 작업 내용을 충족해서 바꿀 것이 없었어요 (리뷰 확인).");
+          return { kind: "done" };
+        }
+        await this.setState(env, task, { stage: "pr", checkpoint: { reviewVerdict: verdict, noDiff: false } });
         return null;
       }
       return null;
@@ -565,6 +595,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
     if (cp.qualityGate) lines.push(`\n## 품질 게이트\n${summarizeGate(cp.qualityGate)}`);
     if (cp.reviewVerdict) lines.push(`\n## 교차 리뷰\n${cp.reviewVerdict.approved ? "승인" : "수정 필요"} — ${cp.reviewVerdict.summary}`);
     if (cp.impl?.openIssues?.length) lines.push(`\n## 미해결 이슈\n${cp.impl.openIssues.map((c: string) => `- ${c}`).join("\n")}`);
+    if (cp.unresolvedReview?.length) lines.push(`\n## 리뷰에서 반복된 지적 (수정 루프로 해결되지 않아 남김)\n${cp.unresolvedReview.map((c: string) => `- ${c}`).join("\n")}`);
     lines.push(`\n---\n_AgentAgency task \`${task.id}\`_`);
     return lines.join("\n");
   }
@@ -722,3 +753,18 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
 }
 
 export { approvalButtons } from "../../core/approvals/card.js";
+
+/** Words of a review's blocking issues, to notice the same objection coming back. */
+function reviewSignature(issues: Array<{ severity: string; description: string }>, summary: string): string {
+  const text = issues.filter((i) => i.severity !== "minor").map((i) => i.description).join(" ") || summary;
+  return [...new Set(text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length >= 2))].sort().join(" ");
+}
+
+function similarity(a: string, b: string): number {
+  const x = new Set(a.split(" ").filter(Boolean));
+  const y = new Set(b.split(" ").filter(Boolean));
+  if (!x.size || !y.size) return 0;
+  let common = 0;
+  for (const w of x) if (y.has(w)) common++;
+  return common / Math.min(x.size, y.size);
+}

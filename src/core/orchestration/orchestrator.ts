@@ -17,6 +17,7 @@ import { allModes, modeDef, isOrganizationMode, resolveModeArg } from "../organi
 import { assertProjectTransition } from "../projects/lifecycle.js";
 import { budgetFor, estimateDifficulty, classifyWork, WORK_CLASS_ORDER } from "../usage/budget.js";
 import { extractJson, asStringArray } from "./llmJson.js";
+import { CAPABILITY_NOTE } from "../../plugins/coding-agency/prompts.js";
 import { approvalButtons, approvalCard, FEEDBACK_ACTIONS } from "../approvals/card.js";
 import { ACTION_POLICIES } from "../approvals/policy.js";
 import { autopilotCovers, autopilotIntent } from "../approvals/autopilot.js";
@@ -322,6 +323,9 @@ export class Orchestrator {
       '- "idea": 지금 하라는 게 아니라 나중에 고려할 아이디어 → reply에 짧은 확인.',
       '- "new_project": 새 프로젝트를 만들자는 요청.',
       '"B안으로", "2번", "그걸로", "좋아"처럼 짧은 답은 직전 대화에서 AI가 내놓은 선택지나 제안에 대한 답입니다. 직전 대화에서 그 선택지를 찾아 그대로 이어가세요. 고른 안이 만들거나 고치는 일이면 "task"로 정하고, task에 고른 안의 내용을 빠짐없이 적으세요.',
+      '"응", "그래", "좋아", "ㅇㅇ"처럼 동의만 했다면 직전 AI가 추천한 안을 고른 것입니다. 추천이 없었다면 되돌리기 쉽고 안전한 쪽을 골라 진행하고, 무엇으로 진행하는지 한 줄로 알리세요. 같은 질문을 다시 묻지 마세요.',
+      '선택지를 내놓을 때는 항상 추천안 하나를 "추천: 2번"처럼 표시하세요.',
+      `할 수 있는 일만 제안하세요. ${CAPABILITY_NOTE}`,
       '애매하면 "answer"로 정하고 무엇을 원하는지 짧게 되물으세요. 작업을 직접 실행하지는 마세요.',
       '형식: {"intent": "answer|task|idea|new_project", "reply": "...", "task": "...", "title": "...", "project": "..."}',
       `\n${context}`,
@@ -503,6 +507,7 @@ export class Orchestrator {
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 아래 맥락을 참고해 질문에 답하세요. 모르면 모른다고 답하고, 실행하지 않은 일을 했다고 말하지 마세요.",
       "명확한 개발 지시가 아니라면 작업을 시작하지 마세요. 필요한 경우 어떤 지시를 주면 되는지 안내하세요.",
+      `할 수 있는 일만 제안하세요. ${CAPABILITY_NOTE}`,
       NO_TOOLS_NOTE,
       `\n${context}`,
       `\n${style}`,

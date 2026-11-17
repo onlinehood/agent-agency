@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 import { makeTestApp, seedRemote, seedUserAndAgents, codingHandler, ADMIN_TG, type TestApp } from "./helpers.js";
 
@@ -16,11 +18,57 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("an empty attempt on code that already does the job finishes the task after review, without a PR", async () => {
+    const h = codingHandler();
+    const already = (req: { prompt: string; cwd: string }) => (req.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다") ? JSON.stringify({ summary: "이미 구현되어 있음", changes: [], tests_added: [], open_issues: [], message: "이미 돼 있어요." }) : h(req as never));
+    app = await makeTestApp({ claude: already as never, codex: already as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수가 있는지 확인하고 없으면 추가해줘" });
+    await app.scheduler.drain(60_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(task!.state).toBe("done");
+    expect(task!.prRef).toBeNull();
+    expect(app.out.allText()).toContain("바꿀 것이 없었어요");
+    expect(app.out.allText()).not.toContain("파일 변경이 없었습니다");
+  }, 120_000);
+
+  it("the same review objection twice stops the fix loop and opens the PR with the objection recorded", async () => {
+    const base = codingHandler();
+    let n = 0;
+    const stubborn = (req: { prompt: string; cwd: string }) => {
+      if (!req.prompt.includes("코드 리뷰어")) return base(req as never);
+      n++;
+      return JSON.stringify({ approved: false, summary: "README Production URL 누락", issues: [{ severity: "major", description: `README에 실제 Vercel Production URL이 없습니다 (${n}차)`, file: "README.md" }], message: "배포 주소를 넣어 주세요." });
+    };
+    app = await makeTestApp({ claude: stubborn as never, codex: stubborn as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "reviewer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "hello 함수를 추가해줘" });
+    await app.scheduler.drain(90_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(n).toBe(2); // one fix round, then it stops
+    expect(task!.prRef).toContain("/pull/1");
+    expect(app.out.allText()).toContain("리뷰어가 같은 지적을 반복해서 수정을 멈췄어요");
+    expect(app.github.prBodies.at(-1)).toContain("리뷰에서 반복된 지적");
+  }, 120_000);
+
   it("an implementer that keeps ending with no file changes hands the task to another agent", async () => {
     const writes = codingHandler();
     const neverWrites = (req: { prompt: string; cwd: string }) =>
       req.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다") ? JSON.stringify({ summary: "샌드박스 오류로 적용 못 함", changes: [], tests_added: [], open_issues: ["bwrap"], message: "적용이 안 돼요." }) : writes(req as never);
-    app = await makeTestApp({ claude: writes, codex: neverWrites as never });
+    // A realistic reviewer: with no diff and no hello.js, the existing code does not do the job.
+    const reviewer = (req: { prompt: string; cwd: string }) =>
+      req.prompt.includes("diff 없음") && !fs.existsSync(path.join(req.cwd, "hello.js"))
+        ? JSON.stringify({ approved: false, summary: "hello 함수가 없습니다", issues: [{ severity: "major", description: "hello.js가 없습니다" }], message: "아직 없어요." })
+        : writes(req as never);
+    app = await makeTestApp({ claude: reviewer as never, codex: neverWrites as never });
     const { user, claude, codex } = await seedUserAndAgents(app);
     const project = await activeProject(app, user.id, [
       { agentId: claude.id, role: "leader" },
@@ -93,7 +141,7 @@ describe("Phase 1 vertical slice: Telegram request → PR → merge approval", (
     expect(task!.attempts).toBe(1); // no extra fix rounds
     // The review prompt tells the reviewer not to reject only because it could not run commands.
     expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("명령을 직접 실행하지 못했더라도 그것만으로 반려하지 마세요");
-    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("코드로 충족할 수 없는 절차 항목");
+    expect(app.codex.calls.concat(app.claude.calls).find((r) => r.prompt.includes("코드 리뷰어"))!.prompt).toContain("코드로 충족할 수 없는 항목");
   }, 120_000);
 
   it("runs plan → implement → gate → review → PR → merge with approval", async () => {
