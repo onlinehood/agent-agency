@@ -16,6 +16,25 @@ async function activeProject(t: TestApp, userId: string, team: Array<{ agentId: 
 }
 
 describe("Phase 1 vertical slice: Telegram request → PR → merge approval", () => {
+  it("an implementer that keeps ending with no file changes hands the task to another agent", async () => {
+    const writes = codingHandler();
+    const neverWrites = (req: { prompt: string; cwd: string }) =>
+      req.prompt.startsWith("당신은 AI 개발 조직의 구현 담당입니다") ? JSON.stringify({ summary: "샌드박스 오류로 적용 못 함", changes: [], tests_added: [], open_issues: ["bwrap"], message: "적용이 안 돼요." }) : writes(req as never);
+    app = await makeTestApp({ claude: writes, codex: neverWrites as never });
+    const { user, claude, codex } = await seedUserAndAgents(app);
+    const project = await activeProject(app, user.id, [
+      { agentId: claude.id, role: "leader" },
+      { agentId: codex.id, role: "implementer" },
+    ]);
+    await app.orchestrator.handleMessage({ telegramUserId: ADMIN_TG, chatId: project.chatId!, topicId: project.topicId!, text: "@코덱스 hello 함수를 추가해줘" });
+    await app.scheduler.drain(90_000);
+    const [task] = (await app.ctx.repos.tasks.listByProject(project.id)).filter((t) => !t.checkpoint.internal);
+    expect(app.out.allText()).toContain("코덱스이(가) 2번 연속 파일을 바꾸지 못했어요. 이 작업은 클로드이(가) 이어받을게요.");
+    expect(task!.assignedAgentId).toBe(claude.id);
+    expect(task!.prRef).toContain("/pull/1"); // the new implementer finished it
+    expect((await app.ctx.repos.approvals.listPending(user.id)).some((a) => a.action === "budget_exceed")).toBe(false);
+  }, 180_000);
+
   it("자동 진행: offered at project start; on, the task runs to a merged PR with no approval cards; turning it on later grants what is waiting", async () => {
     const h = codingHandler();
     app = await makeTestApp({ claude: h, codex: h });

@@ -318,12 +318,36 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
         const sha = await ctx.workspaces.git.commitAll(ws.dir, `${task.stage === "fix" ? "fix" : "feat"}: ${task.title}\n\nAgentAgency task ${task.id} (attempt ${task.attempts}) by ${out.agent.name}`);
         if (!sha && !(await ctx.workspaces.git.changedFiles(ws.dir, ws.base)).length) {
           await ctx.memory.remember(project.id, "lesson", `'${task.title}' 시도 ${task.attempts}: 코드 변경 없이 종료됨`, { sourceRefs: [task.id, out.executionId] });
-          task = await this.setState(env, task, { stage: "fix", checkpoint: { lastFeedback: "이전 시도에서 파일 변경이 없었습니다. 실제로 코드를 수정해야 합니다." } });
+          const streak = Number(task.checkpoint.noChangeStreak ?? 0) + 1;
+          // The same agent keeps ending without touching a file (e.g. its executor cannot write in
+          // this environment): hand the work to another agent instead of looping until the budget.
+          const alt = streak >= 2 ? await ctx.team.alternativeFor(project, out.agent) : null;
+          if (alt) {
+            await this.setState(env, task, {
+              assignedAgentId: alt.id,
+              reviewerAgentId: alt.id === task.reviewerAgentId ? out.agent.id : task.reviewerAgentId,
+              stage: "implementation",
+              attempts: 0, // a fresh budget for the new implementer
+              checkpoint: { noChangeStreak: 0, lastFeedback: null, startedAt: nowIso(), timeBudgetExtended: false },
+            });
+            await env.comm.say({
+              user: env.user,
+              project,
+              speaker: { kind: "moderator" },
+              listener: { kind: "team" },
+              situation: "instruction",
+              body: `${out.agent.name}이(가) ${streak}번 연속 파일을 바꾸지 못했어요. 이 작업은 ${alt.name}이(가) 이어받을게요.`,
+              machineState: { kind: "task.reassigned", taskId: task.id, data: { from: out.agent.id, to: alt.id, reason: "no_changes" } },
+            });
+            await ctx.memory.remember(project.id, "handoff", `${out.agent.name} → ${alt.name}: '${task.title}' 구현이 ${streak}번 연속 변경 없이 끝나 인계`, { sourceRefs: [task.id] });
+            return { kind: "requeue" };
+          }
+          task = await this.setState(env, task, { stage: "fix", checkpoint: { noChangeStreak: streak, lastFeedback: "이전 시도에서 파일 변경이 없었습니다. 실제로 코드를 수정해야 합니다." } });
           continue;
         }
         task = await this.setState(env, task, {
           stage: "testing",
-          checkpoint: { commitSha: sha ?? task.checkpoint.commitSha, impl: { summary: impl.summary ?? "", changes: asStringArray(impl.changes), testsAdded: asStringArray(impl.tests_added), openIssues: asStringArray(impl.open_issues) } },
+          checkpoint: { noChangeStreak: 0, commitSha: sha ?? task.checkpoint.commitSha, impl: { summary: impl.summary ?? "", changes: asStringArray(impl.changes), testsAdded: asStringArray(impl.tests_added), openIssues: asStringArray(impl.open_issues) } },
         });
         await env.comm.say({
           user: env.user,

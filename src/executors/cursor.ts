@@ -62,8 +62,12 @@ export class CursorCliAdapter implements ExecutorAdapter {
     // directory itself (an isolated task workspace or its own data dir), so it trusts that folder.
     // --trust only marks the folder trusted; it does not auto-approve commands like --force/--yolo.
     const args = ["-p", "--output-format", "json", "--workspace", ".", "--trust"];
+    // Headless (-p) runs have nobody to approve shell commands, so without --force every command
+    // (tests, node, npm) is rejected and the agent works blind. Write runs happen in the per-task
+    // workspace (inside the container, or an isolated workspace container), so they may run
+    // commands. Read-only runs use plan mode and never get --force.
     if (req.mode === "readonly") args.push("--mode", "plan");
-    else if (req.isolated) args.push("--force");
+    else args.push("--force");
     if (req.model && req.model !== "auto") args.push("--model", req.model);
     if (req.resumeSessionRef) args.push("--resume", req.resumeSessionRef);
     args.push(prompt);
