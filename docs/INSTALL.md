@@ -686,6 +686,7 @@ docker compose exec app node dist/cli.js doctor
 
 | 증상 | 원인과 해결 |
 |---|---|
+| Codex 에이전트가 "샌드박스 초기화 오류", "namespace 권한 오류"를 말하거나 "파일 변경이 없었습니다"가 반복됨 | Codex의 자체 격리 기능(bubblewrap)은 Docker 컨테이너 안에서 켜지지 않습니다. AgentAgency가 이를 감지해 Codex의 쓰기 작업을 작업 전용 폴더와 컨테이너 격리 안에서 실행합니다(`aa update` 후 적용). 그래도 같은 에이전트가 2번 연속 파일을 못 바꾸면 다른 에이전트가 작업을 이어받습니다. 리뷰처럼 읽기 전용 작업에서는 Codex가 명령을 실행하지 못할 수 있지만, 테스트는 품질 게이트가 따로 돌립니다. |
 | Telegram에 "서버 자원이 부족해 대기 중인 작업을 잠시 미룹니다" | 사용 가능한 메모리(또는 디스크)가 부족해 작업을 미루는 중입니다. 여유가 생기면 자동으로 이어서 하고, 알림은 6시간에 한 번만 옵니다. RAM이 4GB보다 작다면 [스왑을 추가](#111-작은-서버에-스왑-추가-ram-4gb-미만일-때)하거나 더 큰 서버로 옮기세요. `aa doctor`의 "서버 자원" 줄에서 현재 값을 볼 수 있습니다. |
 | `app`이 계속 재시작하고 로그에 `password authentication failed` | 첫 실행 뒤 `.env`의 `POSTGRES_PASSWORD`를 바꿨습니다. 원래 값으로 되돌리세요. 아직 데이터가 없다면 `docker compose down -v`로 볼륨까지 지우고 다시 시작할 수 있습니다(**모든 데이터 삭제**). |
 | `docker compose up`이 `set POSTGRES_PASSWORD in .env` 오류로 멈춤 | `.env`가 없거나 비밀번호가 비어 있습니다. 2.4를 다시 확인하세요. |

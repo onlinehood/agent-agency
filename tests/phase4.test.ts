@@ -1,3 +1,4 @@
+import { CodexCliAdapter } from "../src/executors/codex.js";
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -39,6 +40,15 @@ describe("additional executors: Gemini CLI and Cursor CLI", () => {
     const c = new CursorCliAdapter("cursor-agent");
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).toEqual(expect.arrayContaining(["--mode", "plan", "--output-format", "json"]));
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).not.toContain("--force");
+    // Codex cannot start its own sandbox inside a container: writes then run in the task workspace
+    // with full access (the container is the boundary); read-only runs stay read-only.
+    expect(CodexCliAdapter.sandboxProbeFailed({ code: 1, stdout: "", stderr: "bwrap: No permissions to create a new namespace" })).toBe(true);
+    expect(CodexCliAdapter.sandboxProbeFailed({ code: 0, stdout: "", stderr: "" })).toBe(false);
+    const cx = new CodexCliAdapter("codex");
+    expect(cx.buildArgs({ prompt: "x", cwd: "/tmp", mode: "write" })).toEqual(expect.arrayContaining(["--sandbox", "workspace-write"]));
+    (cx as unknown as { sandboxUnavailable: boolean }).sandboxUnavailable = true;
+    expect(cx.buildArgs({ prompt: "x", cwd: "/tmp", mode: "write" })).toEqual(expect.arrayContaining(["--sandbox", "danger-full-access"]));
+    expect(cx.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).toEqual(expect.arrayContaining(["--sandbox", "read-only"]));
     // Non-interactive runs must not stop at Cursor's workspace-trust prompt.
     expect(c.buildArgs({ prompt: "x", cwd: "/tmp", mode: "readonly" })).toContain("--trust");
     process.env.CURSOR_API_KEY = "x";

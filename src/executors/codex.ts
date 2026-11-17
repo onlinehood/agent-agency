@@ -18,10 +18,30 @@ export class CodexCliAdapter implements ExecutorAdapter {
   readonly displayName = "OpenAI Codex (official subscription CLI)";
   readonly knownModels = ["auto"];
 
+  /**
+   * Codex's own Linux sandbox (bubblewrap) needs unprivileged user namespaces, which a normal
+   * Docker container does not allow ("bwrap: No permissions to create a new namespace"). With
+   * `workspace-write` it then cannot apply a single change, so an implementer on Codex ends every
+   * attempt with no file changes. When the probe shows the sandbox is unavailable, write runs use
+   * `danger-full-access` and rely on the container (and the per-task workspace) as the boundary,
+   * the same boundary the Claude CLI runs in. Read-only runs keep `read-only`: commands fail there,
+   * but the reply itself still works and nothing can be written.
+   */
+  private sandboxUnavailable = false;
+
   constructor(
     private readonly bin: string = "codex",
     private readonly passthroughEnv: string[] = ["CODEX_HOME"],
   ) {}
+
+  /** True when `codex sandbox` cannot start here (detected in detect()). */
+  get ownSandboxUnavailable(): boolean {
+    return this.sandboxUnavailable;
+  }
+
+  static sandboxProbeFailed(r: { code: number | null; stderr: string; stdout: string }): boolean {
+    return r.code !== 0 && /(bwrap|namespace|landlock|seccomp|sandbox)/i.test(`${r.stderr}\n${r.stdout}`);
+  }
 
   async detect(): Promise<AdapterStatus> {
     const ver = await runOnce(this.bin, ["--version"], { env: minimalEnv({}, this.passthroughEnv), timeoutMs: 15000 });
@@ -39,6 +59,8 @@ export class CodexCliAdapter implements ExecutorAdapter {
       };
     }
     const version = ver.stdout.trim().split("\n")[0] ?? null;
+    const probe = await runOnce(this.bin, ["sandbox", "--", "true"], { env: minimalEnv({}, this.passthroughEnv), timeoutMs: 15000 });
+    this.sandboxUnavailable = !probe.spawnError && CodexCliAdapter.sandboxProbeFailed(probe);
     const st = await runOnce(this.bin, ["login", "status"], { env: minimalEnv({}, this.passthroughEnv), timeoutMs: 20000 });
     const out = `${st.stdout}\n${st.stderr}`.trim();
     const authenticated = st.code === 0 && /logged in/i.test(out) && !/not logged in/i.test(out);
@@ -47,6 +69,7 @@ export class CodexCliAdapter implements ExecutorAdapter {
     const notes: string[] = [];
     if (authenticated && apiKey) notes.push("API 키 로그인이 감지되었습니다. 유료 API로 자동 전환하지 않으므로 이 실행기는 비활성화됩니다. `codex login` 으로 ChatGPT 로그인하세요.");
     if (authenticated && !apiKey && !subscriptionAuth) notes.push("로그인 방식을 확인할 수 없어 구독 인증 여부가 미확인입니다.");
+    if (this.sandboxUnavailable) notes.push("이 환경(컨테이너)에서는 Codex 자체 샌드박스를 쓸 수 없어, 쓰기 작업은 작업 전용 폴더와 컨테이너 격리 안에서 실행합니다.");
     return {
       adapterId: this.id,
       installed: true,
@@ -74,7 +97,7 @@ export class CodexCliAdapter implements ExecutorAdapter {
     if (req.resumeSessionRef) args.push("resume", req.resumeSessionRef);
     // cwd is set on the process (or via docker exec -w), so point codex at "."
     args.push("--json", "--skip-git-repo-check", "-C", ".");
-    args.push("--sandbox", req.mode === "readonly" ? "read-only" : "workspace-write");
+    args.push("--sandbox", req.mode === "readonly" ? "read-only" : this.sandboxUnavailable ? "danger-full-access" : "workspace-write");
     if (req.model && req.model !== "auto") args.push("-m", req.model);
     for (const a of req.attachments ?? []) args.push("-i", a);
     const prompt = req.systemPrompt ? `${req.systemPrompt}\n\n---\n\n${req.prompt}` : req.prompt;
