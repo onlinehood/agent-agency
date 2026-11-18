@@ -56,8 +56,12 @@ export interface GitHubService {
    * Preview URL a hosting integration (e.g. Vercel's GitHub app) published for this branch/commit as
    * a GitHub Deployment. "none": no deployment yet; "unavailable": the token cannot read deployments.
    */
-  deploymentPreview(fullName: string, ref: string): Promise<DeploymentPreview>;
+  deploymentPreview(fullName: string, ref: string, sha?: string): Promise<DeploymentPreview>;
+  /** Latest ready deployments (any environment), newest first — for "what's the Vercel URL?". */
+  recentDeployments(fullName: string): Promise<RecentDeployments>;
 }
+
+export type RecentDeployments = { state: "ok"; items: Array<{ environment: string; url: string; ref: string; createdAt: string }> } | { state: "unavailable"; reason: string };
 
 export type DeploymentPreview = { state: "ready"; url: string; environment: string } | { state: "pending" | "none" } | { state: "unavailable"; reason: string };
 
@@ -188,11 +192,13 @@ export class OctokitGitHubService implements GitHubService {
     await (await this.oc()).issues.createComment({ owner, repo, issue_number: number, body });
   }
 
-  async deploymentPreview(fullName: string, ref: string): Promise<DeploymentPreview> {
+  async deploymentPreview(fullName: string, ref: string, sha?: string): Promise<DeploymentPreview> {
     const { owner, repo } = splitRepo(fullName);
     try {
       const o = await this.oc();
-      const deps = (await o.repos.listDeployments({ owner, repo, ref, per_page: 10 })).data;
+      // Hosts record either the branch name or the commit SHA as the deployment ref.
+      let deps = (await o.repos.listDeployments({ owner, repo, ref, per_page: 10 })).data;
+      if (!deps.length && sha) deps = (await o.repos.listDeployments({ owner, repo, sha, per_page: 10 })).data;
       if (!deps.length) return { state: "none" };
       for (const d of deps) {
         const statuses = (await o.repos.listDeploymentStatuses({ owner, repo, deployment_id: d.id, per_page: 5 })).data;
@@ -200,6 +206,24 @@ export class OctokitGitHubService implements GitHubService {
         if (ok) return { state: "ready", url: String(ok.environment_url || ok.target_url), environment: d.environment };
       }
       return { state: "pending" };
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 403 || status === 404) return { state: "unavailable", reason: "GitHub 토큰에 Deployments 읽기 권한이 없어요" };
+      throw e;
+    }
+  }
+
+  async recentDeployments(fullName: string): Promise<RecentDeployments> {
+    const { owner, repo } = splitRepo(fullName);
+    try {
+      const o = await this.oc();
+      const deps = (await o.repos.listDeployments({ owner, repo, per_page: 15 })).data;
+      const items: Array<{ environment: string; url: string; ref: string; createdAt: string }> = [];
+      for (const d of deps.slice(0, 8)) {
+        const ok = (await o.repos.listDeploymentStatuses({ owner, repo, deployment_id: d.id, per_page: 5 })).data.find((x) => x.state === "success" && (x.environment_url || x.target_url));
+        if (ok) items.push({ environment: d.environment, url: String(ok.environment_url || ok.target_url), ref: d.ref, createdAt: d.created_at });
+      }
+      return { state: "ok", items };
     } catch (e) {
       const status = (e as { status?: number }).status;
       if (status === 403 || status === 404) return { state: "unavailable", reason: "GitHub 토큰에 Deployments 읽기 권한이 없어요" };

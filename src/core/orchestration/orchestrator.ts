@@ -314,7 +314,7 @@ export class Orchestrator {
     const ctxProject = project && project.workType !== "lounge" ? project : null;
     const lounge = await this.loungeProject(user);
     const task = await this.internalTask(lounge, `대화: ${text.slice(0, 60)}`, "question");
-    const context = ctxProject ? `${(await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text}\n\n${await this.teamRoster(user)}` : await this.loungeContext(user);
+    const context = ctxProject ? `${(await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text}\n\n${await this.teamRoster(user)}\n\n${await this.deployInfo(ctxProject)}` : await this.loungeContext(user);
     const style = await this.comm.styleFor(user, speaker, { kind: "user" }, "report");
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 사용자의 마지막 메시지를 직전 대화와 함께 이해해 의도를 정하고, JSON 하나만 출력하세요.",
@@ -504,7 +504,7 @@ export class Orchestrator {
       return this.moderatorSays(user, project, "지금 응답할 수 있는 AI 실행기가 없어요. 서버에서 aa config → AI 구독(또는 aa doctor)으로 실행기 상태를 확인해 주세요.", "answer.unavailable", "error");
     }
     const ctxProject = project && project.workType !== "lounge" ? project : null;
-    const context = ctxProject ? `${(await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text}\n\n${await this.teamRoster(user)}` : await this.loungeContext(user);
+    const context = ctxProject ? `${(await this.ctx.contextBuilder.build({ userId: user.id, agent: speaker, project: ctxProject, budget: 5000, latestInstruction: text })).text}\n\n${await this.teamRoster(user)}\n\n${await this.deployInfo(ctxProject)}` : await this.loungeContext(user);
     const style = await this.comm.styleFor(user, speaker, { kind: "user" }, "report");
     const prompt = [
       "당신은 사용자의 AI 개발 조직 구성원입니다. 아래 맥락을 참고해 질문에 답하세요. 모르면 모른다고 답하고, 실행하지 않은 일을 했다고 말하지 마세요.",
@@ -554,6 +554,22 @@ export class Orchestrator {
     const context = ctxProject ? (await this.ctx.contextBuilder.build({ userId: user.id, agent: agents[0]!, project: ctxProject, budget: 4000, latestInstruction: text })).text : await this.loungeContext(user);
     await this.ctx.repos.settings.set(project ? "project" : "user", project?.id ?? user.id, "discussion.last", { topic: text, context, agentIds: agents.map((a) => a.id), projectId: project?.id ?? null });
     await this.discussion.run({ user, project, task, topic: text, context, agents, maxRounds: 2, cwd: this.ctx.config.dataDir });
+  }
+
+  /** Deployment URLs the hosting integration published (e.g. Vercel) — so "버셀 주소 알려줘" can be answered. */
+  private async deployInfo(project: Project): Promise<string> {
+    if (!project.repoRef || !this.ctx.github) return "";
+    const r = await this.ctx.github.recentDeployments(project.repoRef).catch(() => null);
+    if (!r) return "";
+    if (r.state === "unavailable") return `## 배포 주소\n확인 불가: ${r.reason} (서버에서 aa config → GitHub, 토큰에 Deployments: Read 추가)`;
+    if (!r.items.length) return "## 배포 주소\n확인된 배포 없음 — 이 저장소가 Vercel 등에 연결되지 않았거나 아직 배포가 없음";
+    const prod = r.items.find((d) => /prod/i.test(d.environment));
+    const previews = r.items.filter((d) => !/prod/i.test(d.environment)).slice(0, 3);
+    return [
+      "## 배포 주소 (GitHub Deployments 기준, 실제 확인한 값)",
+      prod ? `- 운영(${prod.environment}): ${prod.url} (${prod.createdAt.slice(0, 16).replace("T", " ")})` : "- 운영: 아직 없음",
+      ...previews.map((d) => `- 미리보기(${d.environment}, ${d.ref}): ${d.url}`),
+    ].join("\n");
   }
 
   /** Who is on the team and which AI executors work — so "커서도 합류했어?" can be answered. */
@@ -1527,11 +1543,15 @@ export function needsUnderstanding(c: Classified, project: Project | null, text:
     case "new_project":
       return /[?？]/.test(text);
     case "task_request":
-      return !project || c.confidence < 0.8;
+      // In a topic only a clear build/change verb goes straight to the work queue. "확인해줘",
+      // "알려줘", "봐줘" are questions or lookups and are understood by the AI first.
+      return !project || c.confidence < 0.8 || !CLEAR_BUILD.test(text);
     default:
       return true; // question, idea, unknown
   }
 }
+
+const CLEAR_BUILD = /(추가|구현|만들|고쳐|고치|수정|변경|바꿔|바꾸|삭제|제거|리팩터|작성|적용|연동|개선|업데이트|넣어|빼|fix|add|implement|build|create|refactor|update|remove|delete|write|change|migrate)/i;
 
 /** Conversations run read-only; tell the AI so it hands work over instead of attempting it. */
 const NO_TOOLS_NOTE = "이 대화에서는 파일을 만들거나 고치거나 명령을 실행할 수 없고, 그럴 필요도 없습니다. 도구를 쓰지 말고 바로 답하세요. 구현·수정 요청은 팀이 별도 작업 공간에서 쓰기 권한으로 진행하니, 권한이 없다는 말은 하지 마세요.";

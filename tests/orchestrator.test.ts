@@ -196,6 +196,26 @@ describe("orchestrator", () => {
     expect(await app.orchestrator.resumeActivationsOnStart()).toEqual([]);
   });
 
+  it("\"버셀주소 확인해줘\" in a project topic is answered with the real deployment URL, not filed as a coding task", async () => {
+    app = await makeTestApp({ claude: (req) => (req.prompt.includes("사용자 메시지:") ? JSON.stringify({ intent: "answer", reply: "https://calc.vercel.app 이에요." }) : "{}"), codex: () => "{}" });
+    const { user } = await seedUserAndAgents(app);
+    const created = await app.ctx.repos.projects.create({ ownerId: user.id, name: "simple-calc", slug: "simple-calc", status: "active", repoRef: "tester/simple-calc" });
+    const p = await app.ctx.repos.projects.update(created.id, { chatId: "-100123", topicId: 77 });
+    app.github.deployments = [
+      { environment: "Preview", url: "https://calc-git-aa-1.vercel.app", ref: "aa/task-1", createdAt: "2026-11-18T09:00:00Z" },
+      { environment: "Production", url: "https://calc.vercel.app", ref: "main", createdAt: "2026-11-17T09:00:00Z" },
+    ];
+    await app.orchestrator.handleMessage(msg("버셀주소 확인해줘", { topicId: 77 }));
+    expect(await app.ctx.repos.tasks.listByProject(p.id)).toEqual([]);
+    const prompt = app.claude.calls.find((r) => r.prompt.includes("사용자 메시지: 버셀주소 확인해줘"))!.prompt;
+    expect(prompt).toContain("운영(Production): https://calc.vercel.app");
+    expect(prompt).toContain("미리보기(Preview, aa/task-1): https://calc-git-aa-1.vercel.app");
+    expect(app.out.allText()).toContain("https://calc.vercel.app");
+    // A clear build verb still goes straight to work.
+    await app.orchestrator.handleMessage(msg("다크모드 추가해줘", { topicId: 77 }));
+    expect((await app.ctx.repos.tasks.listByProject(p.id)).length).toBe(1);
+  });
+
   it("/exec cloud sets a Codex Cloud environment for the project in that topic only", async () => {
     app = await makeTestApp();
     const { user } = await seedUserAndAgents(app);

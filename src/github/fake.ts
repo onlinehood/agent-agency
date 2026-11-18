@@ -12,6 +12,12 @@ export class FakeGitHubService implements GitHubService {
   async deploymentPreview(_fullName: string, ref: string): Promise<import("./client.js").DeploymentPreview> {
     return this.previews.get(ref) ?? { state: "none" };
   }
+
+  /** Ready deployments (for tests). */
+  deployments: Array<{ environment: string; url: string; ref: string; createdAt: string }> = [];
+  async recentDeployments(): Promise<import("./client.js").RecentDeployments> {
+    return { state: "ok", items: this.deployments };
+  }
   comments: Array<{ repo: string; number: number; body: string }> = [];
   calls: string[] = [];
   login = "tester";
