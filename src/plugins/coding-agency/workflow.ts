@@ -548,9 +548,10 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
     }
     // A hosting integration (e.g. Vercel's GitHub app) publishes a preview URL as a GitHub Deployment.
     if (!previewUrl && project.repoRef && ctx.github && prNumber != null) {
-      const pv: DeploymentPreview = await ctx.github.deploymentPreview(project.repoRef, ws.branch).catch(() => ({ state: "none" as const }));
+      const headSha = await ctx.github.getPullRequest(project.repoRef, prNumber).then((p) => p.headSha).catch(() => undefined);
+      const pv: DeploymentPreview = await ctx.github.deploymentPreview(project.repoRef, ws.branch, headSha).catch(() => ({ state: "none" as const }));
       if (pv.state === "ready") previewUrl = pv.url;
-      else void this.watchPreview(env, task.id, implementer, ws.branch, pv);
+      else void this.watchPreview(env, task.id, implementer, ws.branch, pv, headSha);
     }
     if (!project.repoRef) openIssues.push("GitHub 저장소가 연결되지 않아 PR 대신 로컬 브랜치에만 커밋했습니다.");
     if (cp.qualityGate?.preexisting?.length) openIssues.push(`기존 코드에서 이미 실패하던 검사(이번 변경과 무관): ${cp.qualityGate.preexisting.join(", ")}`);
@@ -679,7 +680,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
    * The preview is usually still building when the PR opens: check again for a while and post the
    * URL when it is ready. If no preview ever shows up, say once per project how to get one.
    */
-  private async watchPreview(env: WorkflowEnv, taskId: string, speaker: Agent, branch: string, first: DeploymentPreview): Promise<void> {
+  private async watchPreview(env: WorkflowEnv, taskId: string, speaker: Agent, branch: string, first: DeploymentPreview, sha?: string): Promise<void> {
     const { ctx, project } = env;
     try {
       const every = Math.max(10, Number(process.env.AA_PREVIEW_POLL_MS ?? 20_000));
@@ -688,7 +689,7 @@ export class CodingAgencyPlugin implements WorkTypePlugin {
       for (let i = 0; i < tries; i++) {
         await new Promise<void>((r) => setTimeout(r, every).unref());
         if (ctx.lifecycle.shuttingDown) return;
-        last = await ctx.github!.deploymentPreview(project.repoRef!, branch).catch(() => last);
+        last = await ctx.github!.deploymentPreview(project.repoRef!, branch, sha).catch(() => last);
         if (last.state === "ready") {
           await ctx.repos.tasks.checkpoint(taskId, { previewUrl: last.url });
           await env.comm.say({ user: env.user, project, speaker: { kind: "agent", agent: speaker }, listener: { kind: "user" }, situation: "report", body: `미리보기 준비됐어요 → ${last.url}`, machineState: { kind: "task.preview", taskId, data: { url: last.url } } });
