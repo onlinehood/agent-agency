@@ -514,6 +514,7 @@ AgentAgency는 배포를 직접 하지 않습니다. 배포 권한은 사용자 
 
 - PR을 올릴 때마다 Vercel이 미리보기 주소를 만듭니다. AgentAgency가 그 주소를 읽어 "다 했어요! … 미리보기 → https://…vercel.app"처럼 알려 줍니다. 빌드 중이면 끝나는 대로 "미리보기 준비됐어요"를 보냅니다.
 - PR이 병합되면 Vercel이 운영 배포를 자동으로 합니다.
+- 채팅에서 "버셀주소 알려줘"라고 물으면 배포 기록에서 운영 주소와 최근 미리보기 주소를 찾아 답합니다.
 - 주소를 읽으려면 GitHub 토큰에 Deployments 읽기 권한이 필요합니다(위 권한 목록 참고). 연결되지 않은 프로젝트에서는 처음 한 번만 연결 방법을 안내합니다.
 
 **Codex Cloud (선택, 실험 기능)**
@@ -545,7 +546,7 @@ AI 팀은 작업 결과를 GitHub PR로 올립니다. 계정 종류에 따라 �
    - Contents: Read and write
    - Pull requests: Read and write
    - Metadata: Read-only (자동으로 "Required"로 들어갑니다)
-   - (선택) Deployments: Read-only — Vercel 같은 호스팅을 저장소에 연결해 두면, PR의 미리보기 주소를 읽어 완료 메시지에 붙여 줍니다
+   - (선택) Deployments: Read-only — Vercel 같은 호스팅을 저장소에 연결해 두면, PR의 미리보기 주소를 읽어 완료 메시지에 붙여 주고 "버셀주소 알려줘"에 운영·미리보기 주소로 답합니다
 
    Fine-grained 토큰 화면에는 "Checks" 권한이 없습니다. 필요 없으니 찾지 않아도 됩니다.
 4. 만든 토큰(`github_pat_...`)을 설정 화면에 붙여 넣습니다. 이어서 새 저장소를 만들 계정/조직을 묻습니다(기본값: 토큰 주인).

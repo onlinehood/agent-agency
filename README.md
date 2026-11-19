@@ -13,10 +13,12 @@ AgentAgency는 사용자가 AI 에이전트 조직을 구성하고 목표를 지
 | 영역 | 내용 |
 |---|---|
 | 조직 경험 | 회사·건설현장·대학에 레스토랑 주방·우주 관제센터·모험가 길드까지 여섯 가지 세계관(`/mode 주방`). 같은 사실을 발화자·청자 관계와 직책에 맞는 짧은 말투로 표현합니다. 친밀도는 표현에만 영향을 줍니다. |
-| 보이는 협업 | 단일 Telegram 봇이 마스터 라운지와 프로젝트 Topic에서 AI별 이름·역할·발화 대상을 표시합니다. 진행 상황은 고정 메시지 하나로 보여 줍니다. |
-| 실제 산출물 | 기획 → 구현 → 품질 게이트(테스트·lint·타입·보안·Playwright) → 교차 리뷰 → 수정 → GitHub PR → 승인 후 병합 순으로 진행합니다. |
+| 카톡 같은 대화 | 단일 Telegram 봇이 마스터 라운지와 프로젝트 Topic에서 AI별 이름으로 짧게 말합니다. 작업을 시작할 때 "바로 들어갑니다!", 끝나면 "다 했어요! … 이건 어떻게 할까요?"처럼 사람이 말할 만한 순간만 채팅에 올리고, 단계별 기록은 고정 진행 메시지와 "📋 자세히" 버튼으로 봅니다(`/chat log`로 예전처럼 모두 보기). |
+| 말을 알아듣는 AI | 슬래시 명령과 분명한 작업 지시("로그인 화면 추가해줘")는 바로 처리합니다. 질문·아이디어·애매한 말("버셀주소 확인해줘", "알아서 만들어봐")은 AI가 최근 대화를 함께 읽고 답하거나 작업으로 정리합니다. |
+| 실제 산출물 | 기획 → 구현 → 품질 게이트(테스트·lint·타입·보안·Playwright) → 교차 리뷰 → 수정 → GitHub PR → 승인 후 병합 순으로 진행합니다. 같은 지적이 반복되면 멈추고 사용자에게 묻습니다. 배포·계정 설정처럼 팀이 할 수 없는 일은 계속 시도하지 않고 방법과 함께 부탁합니다. |
+| 배포 주소 | 저장소를 Vercel 같은 호스팅에 연결해 두면 PR 완료 메시지에 미리보기 주소를 붙이고, "버셀주소 알려줘"라고 물으면 운영·미리보기 주소를 실제 배포 기록에서 찾아 답합니다. 배포 자체는 하지 않습니다(배포 권한은 사용자 계정에만). |
 | 통제 가능한 자율성 | 기본은 단계마다 승인 버튼을 거칩니다. "자동으로 진행해"(또는 `/auto on`)라고 하면 계획·PR 병합 같은 일상 승인은 알아서 넘기고, 운영 배포·DB, 삭제, 유료 API 같은 위험한 작업만 묻습니다. 위험한 작업은 재확인을 한 번 더 요구합니다. |
-| 구독 우선 | 공식 구독 Cloud를 먼저 쓰고, 안 되면 격리된 Local CLI로 전환합니다. 종량제 유료 API는 기본 비활성이며 자동 전환하지 않습니다. |
+| 구독 우선 | Claude Code, Codex, Cursor, Gemini CLI를 각자의 구독 로그인으로 씁니다. Codex Cloud는 프로젝트마다 환경을 정해 쓸 수 있습니다(`/exec cloud <환경 ID>`). 종량제 유료 API는 기본 비활성이며 자동 전환하지 않습니다. |
 | 영구 기억 | PostgreSQL이 대화·기억·작업 상태의 원천입니다. Context Builder가 필요한 맥락만 골라 전달합니다. |
 
 ## 빠른 시작 (Docker Compose, 단일 Linux 서버)
@@ -34,12 +36,21 @@ curl -fsSL https://raw.githubusercontent.com/onlinehood/agent-agency/main/instal
 <img src="docs/images/cli-install.png" alt="설치 화면" width="640">
 
 1. Telegram 봇 토큰을 넣고, 그룹에 메시지를 하나 보낸 뒤 Enter를 누르면 그룹과 관리자를 자동으로 찾습니다.
-2. 가진 AI 구독(Claude, Codex, Gemini)을 고르면 그 자리에서 로그인 화면을 띄우고 실제 실행으로 검증합니다.
+2. 가진 AI 구독(Claude, Codex, Cursor, Gemini)을 고르면 그 자리에서 로그인 화면을 띄우고 실제 실행으로 검증합니다.
 3. GitHub를 연결합니다. 개인 계정은 Fine-grained PAT, 조직은 GitHub App을 권장합니다.
 4. 실행 우선순위, 조직 세계관, 초기 에이전트를 정합니다.
 5. 전체 진단과 엔드투엔드 스모크 테스트를 마치면 Telegram 운영이 시작됩니다.
 
-운영 중에는 `aa` 한 단어로 관리 메뉴(설정 바꾸기, 상태, 로그, 진단, 백업, 업데이트, 재시작)를 엽니다. 설정은 `aa config` 하나로 모든 설정(Telegram, AI 구독, GitHub, 실행 정책, 세계관, 에이전트, 기능 플래그, 유료 API, 백업, 인증정보 차단)을 메뉴에서 고칩니다. 웹 대시보드는 선택 사항입니다(`aa web`).
+운영 중에는 `aa` 한 단어로 관리 메뉴(설정 바꾸기, 상태, 로그, 진단, 백업, 업데이트, 재시작)를 엽니다. 휴대폰 SSH 앱처럼 좁은 화면에도 맞춰 그립니다. 설정은 `aa config` 하나로 모든 설정(Telegram, AI 구독, GitHub, 실행 정책, 세계관, 에이전트, 기능 플래그, 유료 API, 백업, 인증정보 차단)을 메뉴에서 고칩니다. 웹 대시보드는 선택 사항입니다(`aa web`).
+
+| 자주 쓰는 명령 | 하는 일 |
+|---|---|
+| `aa update` | 최신 버전으로 업데이트하고 재시작 |
+| `aa status` · `aa logs` · `aa doctor` | 상태, 로그, 전체 진단 |
+| `aa login claude\|codex\|cursor\|gemini` | AI 구독 로그인만 다시 하기 |
+| `aa verify <실행기>` | 실제 실행으로 검증 (예: `aa verify cursor-cli`) |
+| `aa cursor` | Cursor CLI 설치 |
+| `aa backup` · `aa restart` | 백업(복원 검증 포함), 재시작 |
 
 공개 도메인 없이 Telegram Long Polling으로 동작합니다.
 
@@ -48,8 +59,10 @@ curl -fsSL https://raw.githubusercontent.com/onlinehood/agent-agency/main/instal
 - 마스터 라운지: `새 프로젝트 만들어줘 "가계부"` 라고 말하면 AI 팀이 토론해 이름·스택·팀·비공개 저장소를 제안합니다. 승인하면 Topic이 생성되고, "▶️ 설명대로 바로 시작" 버튼으로 첫 작업을 바로 시작할 수 있습니다. 진행 중인 프로젝트가 하나뿐이면 라운지에서 `알아서 만들어봐` 처럼 말해도 그 프로젝트의 작업으로 접수됩니다.
 - 리서치: `AI 코딩 도구 시장 조사 보고서 프로젝트 만들어줘` 또는 `/new research <주제>` 로 출처가 달린 보고서를 만드는 리서치 프로젝트를 시작합니다.
 - 기존 저장소: `https://github.com/org/repo 가져와줘` 라고 말하면 읽기 전용으로 분석하고 팀 구성안을 냅니다. 승인한 뒤에만 연결합니다.
-- 프로젝트 Topic: `@클로드 로그인 화면 추가해줘` 처럼 작업을 지시합니다. `다들 어떻게 생각해?`, `아이디어 있어?` 같은 팀 질문에는 여러 에이전트가 각자 답합니다. `나중에 다크모드 있으면 좋겠다` 같은 아이디어 문장은 후보 목록에 저장됩니다.
-- 명령어: `/status` `/mode` `/agents` `/agent` `/team` `/approvals` `/usage` `/experiment` `/baseline` `/maintenance` `/upgrade` `/exec` `/executors` `/pause` `/resume` `/cancel` `/priority` `/complete` `/archive` `/restore` `/delete` `/ideas` `/flags`
+- 프로젝트 Topic: `@클로드 로그인 화면 추가해줘` 처럼 작업을 지시합니다. `다들 어떻게 생각해?`, `아이디어 있어?` 같은 팀 질문에는 여러 에이전트가 단톡방처럼 한 줄씩 주고받습니다. `나중에 다크모드 있으면 좋겠다` 같은 아이디어 문장은 후보 목록에 저장됩니다. `버셀주소 확인해줘`, `지금 뭐 하고 있어?` 같은 질문에는 바로 답합니다.
+- 자동 진행: 프로젝트를 시작할 때 "끝까지 자동 진행"을 고르거나, 중간에 `자동으로 진행해`(또는 `/auto on`)라고 말하면 일상 승인을 알아서 넘깁니다. 끄기는 `/auto off`.
+- 작업 중 질문: 에이전트가 시작 전에 꼭 필요한 것을 추천안과 함께 물으면 그 Topic에 답하거나 "👌 알아서 해 줘"를 누릅니다.
+- 명령어: `/status` `/help` `/new` `/import` `/mode` `/agents` `/agent` `/team` `/moderator` `/auto` `/chat` `/approvals` `/usage` `/experiment` `/baseline` `/maintenance` `/upgrade` `/exec` `/executors` `/pause` `/resume` `/cancel` `/priority` `/complete` `/archive` `/restore` `/delete` `/ideas` `/flags`
 - 승인 카드의 "✏️ 수정 요청"을 누르고 고칠 점을 메시지로 보내면 그 의견을 반영해 다시 기획하거나 같은 PR을 수정합니다.
 
 ## 개발
@@ -61,7 +74,7 @@ TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npm test   # 실�
 npm run dev          # DATABASE_URL이 없으면 내장 PostgreSQL(PGlite) 사용
 ```
 
-CLI: `agent-agency start | migrate | doctor | verify-executor <id> | backup | restore <file> | upgrade-check | setup-token`
+CLI: `agent-agency start | config | migrate | doctor | verify-executor <id> | gemini-login | backup | restore <file> | upgrade-check | setup-token`
 
 ## 원칙
 
